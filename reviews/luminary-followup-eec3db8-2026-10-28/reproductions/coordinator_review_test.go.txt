@@ -1,0 +1,36 @@
+package ashlar_test
+
+import (
+ "encoding/json"
+ "errors"
+ "strings"
+ "testing"
+ "github.com/mattjoyce/ashlar/jsoncontract"
+)
+
+type coordinatorSecret string
+func (s *coordinatorSecret) UnmarshalJSON(raw []byte) error { return errors.New("rejected secret: " + string(raw)) }
+
+func TestCoordinatorJSONCompatibility(t *testing.T) {
+ t.Run("string_tag", func(t *testing.T) {
+  raw:=[]byte(`{"count":"42"}`)
+  var standard, strict struct {Count int `json:"count,string"`}
+  if err:=json.Unmarshal(raw,&standard);err!=nil{t.Fatal(err)}
+  d,err:=jsoncontract.Read("sample.json",raw);if err!=nil{t.Fatal(err)}
+  if err=d.DecodeStrict(&strict);err!=nil{t.Fatalf("stdlib accepted %v; strict rejected: %v",standard,err)}
+ })
+ t.Run("base64_bytes",func(t *testing.T){
+  raw:=[]byte(`{"data":"aGVsbG8="}`)
+  var standard, strict struct {Data []byte `json:"data"`}
+  if err:=json.Unmarshal(raw,&standard);err!=nil{t.Fatal(err)}
+  d,err:=jsoncontract.Read("sample.json",raw);if err!=nil{t.Fatal(err)}
+  if err=d.DecodeStrict(&strict);err!=nil{t.Fatalf("stdlib accepted %q; strict rejected: %v",standard.Data,err)}
+ })
+}
+func TestCoordinatorJSONSecretError(t *testing.T){
+ d,err:=jsoncontract.Read("sample.json",[]byte(`{"password":"synthetic-secret-marker"}`));if err!=nil{t.Fatal(err)}
+ var dst struct {Password coordinatorSecret `json:"password"`}
+ err=d.DecodeStrict(&dst)
+ if err==nil{t.Fatal("expected decoder failure")}
+ if strings.Contains(err.Error(),"synthetic-secret-marker"){t.Fatalf("secret disclosed: %v",err)}
+}

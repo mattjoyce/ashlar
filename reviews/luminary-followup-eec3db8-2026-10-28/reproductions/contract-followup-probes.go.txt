@@ -1,0 +1,49 @@
+package ashlar_test
+import (
+ "context"
+ "encoding/json"
+ "testing"
+ "github.com/mattjoyce/ashlar"
+ "github.com/mattjoyce/ashlar/jsoncontract"
+ "github.com/mattjoyce/ashlar/yamlconfig"
+)
+func TestContractFollowupDecodeCompatibility(t *testing.T) {
+ t.Run("string_tag",func(t *testing.T){
+  raw:=[]byte(`{"port":"8080"}`)
+  var standard,strict struct{Port int `json:"port,string"`}
+  if err:=json.Unmarshal(raw,&standard);err!=nil{t.Fatal(err)}
+  d,_:=jsoncontract.Read("a.json",raw);err:=d.DecodeStrict(&strict)
+  t.Logf("standard=%v strict=%v err=%v",standard,strict,err)
+  if err==nil{t.Fatal("expected observed regression")}
+ })
+ t.Run("base64_bytes",func(t *testing.T){
+  raw:=[]byte(`{"data":"aGVsbG8="}`)
+  var standard,strict struct{Data []byte `json:"data"`}
+  if err:=json.Unmarshal(raw,&standard);err!=nil{t.Fatal(err)}
+  d,_:=jsoncontract.Read("a.json",raw);err:=d.DecodeStrict(&strict)
+  t.Logf("standard=%s strict=%s err=%v",standard.Data,strict.Data,err)
+  if err==nil{t.Fatal("expected observed regression")}
+ })
+}
+func TestContractFollowupInvalidArrayIndices(t *testing.T){
+ for _,ptr:=range []ashlar.Pointer{"/items/+0","/items/-0"}{
+ root,_:=yamlconfig.Read("a.yaml",[]byte("items: [old]\n"))
+ r,err:=yamlconfig.ResolveFragments(context.Background(),[]yamlconfig.Fragment{{Root:root}},yamlconfig.ResolveOptions{Explicit:[]yamlconfig.Override{yamlconfig.ExplicitSetting(ptr,"cli",ashlar.StringValue("new",ashlar.Provenance{}))}})
+ t.Logf("ptr=%s err=%v value=%s",ptr,err,r.Root().At("/items/0").Summary(nil,"/items/0"))
+ if err!=nil{t.Fatal("expected observed acceptance")}
+ }
+}
+func TestContractFollowupStampKeyOrigin(t *testing.T){
+ root,_:=yamlconfig.Read("a.yaml",[]byte("port: 80\n"))
+ stamped:=yamlconfig.ExplicitSetting("/service","cli",root).Value
+ member,_:=stamped.LookupMember("port")
+ t.Logf("key origin=%v value origin=%v",member.KeyOrigin,member.Value.Provenance().Effective)
+ if member.KeyOrigin.Kind!=ashlar.OriginFile{t.Fatal("expected observed discrepancy")}
+}
+func TestContractFollowupParentRuleBypass(t *testing.T){
+ root,_:=yamlconfig.Read("a.yaml",[]byte("service:\n  port: 80\n"))
+ policy:=yamlconfig.DefaultCompositionPolicy();policy.Rules["/service"]=yamlconfig.MergeForbidDuplicate
+ r,err:=yamlconfig.ResolveFragments(context.Background(),[]yamlconfig.Fragment{{Root:root}},yamlconfig.ResolveOptions{Policy:policy,Explicit:[]yamlconfig.Override{yamlconfig.ExplicitSetting("/service/port","cli",ashlar.StringValue("new",ashlar.Provenance{}))}})
+ t.Logf("parent forbid error=%v new=%s",err,r.Root().At("/service/port").Summary(nil,"/service/port"))
+ if err!=nil{t.Fatal("expected observed bypass")}
+}

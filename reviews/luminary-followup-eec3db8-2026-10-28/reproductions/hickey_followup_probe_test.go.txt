@@ -1,0 +1,52 @@
+// Copy into module root as hickey_followup_probe_test.go, then run:
+// go test -run TestHickeyFollowup -count=1 .
+package ashlar_test
+
+import (
+ "context"
+ "errors"
+ "fmt"
+ "os"
+ "path/filepath"
+ "strings"
+ "testing"
+ "time"
+ "github.com/mattjoyce/ashlar"
+ "github.com/mattjoyce/ashlar/jsoncontract"
+ "github.com/mattjoyce/ashlar/yamlconfig"
+)
+
+func TestHickeyFollowupQuotedDuration(t *testing.T) {
+ root,err:=yamlconfig.Read("a.yaml",[]byte("secret: \"marker\\nsecret-material\"\n")); if err!=nil{t.Fatal(err)}
+ var dst struct{Secret time.Duration `yaml:"secret"`}
+ err=yamlconfig.DecodeValueStrict(root,&dst)
+ if err==nil {t.Fatal("wanted error")}; if strings.Contains(err.Error(),"secret-material"){t.Fatalf("quoted secret leaked: %s",err)}
+}
+func TestHickeyFollowupHookError(t *testing.T) {
+ dir:=t.TempDir();if err:=os.WriteFile(filepath.Join(dir,"a.yaml"),[]byte("value: safe\n"),0600);err!=nil{t.Fatal(err)}
+ for _,which:=range []string{"transformer","verifier"}{t.Run(which,func(t *testing.T){
+  opts:=yamlconfig.IncludeOptions{}
+  if which=="transformer"{opts.Transformer=func(context.Context,string,[]byte)([]byte,error){return nil,errors.New("decrypt failed: secret-hook-material")}} else {opts.Verifier=func(context.Context,string,[]byte)error{return errors.New("verify failed: secret-hook-material")}}
+  _,err:=yamlconfig.LoadIncludeGraph(context.Background(),os.DirFS(dir),"a.yaml",opts)
+  if err==nil{t.Fatal("wanted error")};if strings.Contains(fmt.Sprintf("%+v",err),"secret-hook-material"){t.Fatalf("hook secret leaked: %s",err)}
+ })}
+}
+type hickeySecretDecoder string
+func(h *hickeySecretDecoder) UnmarshalText(b []byte)error{return fmt.Errorf("rejected %s",b)}
+func TestHickeyFollowupJSONDecoder(t *testing.T){
+ doc,err:=jsoncontract.Read("a.json",[]byte(`{"secret":"json-secret-material"}`));if err!=nil{t.Fatal(err)}
+ var dst struct{Secret hickeySecretDecoder `json:"secret"`};err=doc.DecodeStrict(&dst)
+ if err==nil{t.Fatal("wanted error")};if strings.Contains(err.Error(),"json-secret-material"){t.Fatalf("JSON secret leaked: %s",err)}
+}
+func TestHickeyFollowupNegativeFreeze(t *testing.T){
+ root,err:=yamlconfig.Read("a.yaml",[]byte("token: public-label\n"));if err!=nil{t.Fatal(err)}
+ policy:=yamlconfig.DefaultCompositionPolicy();policy.Redactor=ashlar.RedactorFunc(func(ashlar.Pointer,string)bool{return false})
+ resolved,err:=yamlconfig.ResolveFragments(context.Background(),[]yamlconfig.Fragment{{Root:root}},yamlconfig.ResolveOptions{Policy:policy});if err!=nil{t.Fatal(err)}
+ if resolved.Root().At("/token").Provenance().Sensitive{t.Fatal("probe expected frozen classification false")}
+ if strings.Contains(resolved.Explain("/token"),ashlar.RedactedLiteral){t.Fatalf("negative frozen classification ignored: %s",resolved.Explain("/token"))}
+}
+func TestHickeyFollowupSafeSuffix(t *testing.T){
+ root,err:=yamlconfig.Read("a.yaml",[]byte("credentials:\n  token_file: public-path\n"));if err!=nil{t.Fatal(err)}
+ got:=root.FormatProvenanceReport(nil)
+ if strings.Contains(got,ashlar.RedactedLiteral){t.Fatalf("safe suffix exemption overridden: %s",got)}
+}

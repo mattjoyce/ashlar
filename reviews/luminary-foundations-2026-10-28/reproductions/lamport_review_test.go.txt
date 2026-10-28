@@ -1,0 +1,41 @@
+package yamlconfig_test
+
+import (
+ "context"
+ "strings"
+ "testing"
+ "github.com/mattjoyce/ashlar"
+ "github.com/mattjoyce/ashlar/yamlconfig"
+)
+func reviewFragment(t *testing.T, raw string) yamlconfig.Fragment {
+ t.Helper(); v,e:=yamlconfig.Read("config.yaml", []byte(raw)); if e!=nil {t.Fatal(e)}; return yamlconfig.Fragment{Path:"config.yaml",Raw:[]byte(raw),Root:v}
+}
+func TestLamportReviewBooleanSecretError(t *testing.T) {
+ f:=reviewFragment(t,"secret: false\n")
+ _,e:=yamlconfig.ResolveFragments(context.Background(),[]yamlconfig.Fragment{f},yamlconfig.ResolveOptions{Env:yamlconfig.EnvBinding{Bindings:map[ashlar.Pointer]string{"/secret":"SECRET"},Lookup:func(string)(string,bool){return "private-material",true}}})
+ if e==nil {t.Fatal("expected failure")}; if strings.Contains(e.Error(),"private-material") {t.Fatalf("secret leak: %v",e)}
+}
+func TestLamportReviewArrayPointerOverride(t *testing.T) {
+ f:=reviewFragment(t,"items: [old]\n")
+ r,e:=yamlconfig.ResolveFragments(context.Background(),[]yamlconfig.Fragment{f},yamlconfig.ResolveOptions{Explicit:[]yamlconfig.Override{yamlconfig.ExplicitSetting("/items/0","flag",ashlar.StringValue("new",ashlar.Provenance{}))}})
+ if e!=nil {t.Fatal(e)}; s,_:=r.Root().At("/items/0").StringVal(); if s!="new" {t.Fatal(s)}
+}
+func TestLamportReviewDeclaredReplace(t *testing.T) {
+ f:=reviewFragment(t,"from_file: true\n")
+ r,e:=yamlconfig.ResolveFragments(context.Background(),[]yamlconfig.Fragment{f},yamlconfig.ResolveOptions{Policy:yamlconfig.CompositionPolicy{ObjectRule:yamlconfig.MergeReplace},Defaults:[]yamlconfig.Override{yamlconfig.DefaultSetting("/from_default","d",ashlar.BoolValue(true,ashlar.Provenance{}))}})
+ if e!=nil {t.Fatal(e)}; if !r.Root().At("/from_default").IsOmitted() {t.Fatal("declared replacement silently became merge")}
+}
+func TestLamportReviewEscapedPattern(t *testing.T) {
+ a:=reviewFragment(t,"a/b: {x: first}\n"); b:=reviewFragment(t,"a/b: {x: second}\n")
+ p:=yamlconfig.DefaultCompositionPolicy(); p.PatternRules=[]yamlconfig.PatternMergeRule{{Pattern:"/a~1b/*",Rule:yamlconfig.MergeForbidDuplicate}}
+ _,e:=yamlconfig.ComposeFragments(p,[]yamlconfig.Fragment{a,b}); if e==nil {t.Fatal("escaped forbid pattern bypassed")}
+}
+func TestLamportReviewParentSecretReport(t *testing.T) {
+ f:=reviewFragment(t,"credentials: {user: private-material}\n")
+ report:=f.Root.FormatProvenanceReport(nil); if strings.Contains(report,"private-material") {t.Fatal(report)}
+}
+func TestLamportReviewInterpolationOnce(t *testing.T) {
+ f:=reviewFragment(t,"value: '${A}/${B}'\n")
+ r,e:=yamlconfig.ResolveFragments(context.Background(),[]yamlconfig.Fragment{f},yamlconfig.ResolveOptions{Env:yamlconfig.EnvBinding{InterpolateScalar:true,Lookup:func(k string)(string,bool){return map[string]string{"A":"${B}","B":"end"}[k],true}}})
+ if e!=nil {t.Fatal(e)}; s,_:=r.Root().At("/value").StringVal(); if s!="${B}/end" {t.Fatalf("replacement reinterpreted: %q",s)}
+}

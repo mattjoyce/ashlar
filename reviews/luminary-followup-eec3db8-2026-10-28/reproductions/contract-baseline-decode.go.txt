@@ -1,0 +1,8 @@
+package ashlar_test
+import("testing";"github.com/mattjoyce/ashlar/jsoncontract")
+func TestContractBaselineDecode(t *testing.T){
+ d,_:=jsoncontract.Read("a.json",[]byte(`{"port":"8080","data":"aGVsbG8="}`))
+ var dst struct{Port int `json:"port,string"`;Data []byte `json:"data"`}
+ if err:=d.DecodeStrict(&dst);err!=nil{t.Fatal(err)}
+ t.Logf("port=%d data=%s",dst.Port,dst.Data)
+}

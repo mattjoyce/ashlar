@@ -1,0 +1,45 @@
+package ashlar_test
+
+import (
+ "context"
+ "errors"
+ "strings"
+ "testing"
+
+ "github.com/mattjoyce/ashlar"
+ "github.com/mattjoyce/ashlar/jsoncontract"
+ "github.com/mattjoyce/ashlar/yamlconfig"
+)
+
+func TestContractReviewPolicySubstitution(t *testing.T) {
+ a, _ := yamlconfig.Read("a.yaml", []byte("a: 1\n"))
+ b, _ := yamlconfig.Read("b.yaml", []byte("b: 2\n"))
+ p := yamlconfig.CompositionPolicy{ObjectRule: yamlconfig.MergeReplace}
+ direct, err := yamlconfig.ComposeValues(p, a, b); if err != nil {t.Fatal(err)}
+ resolved, err := yamlconfig.ResolveFragments(context.Background(), []yamlconfig.Fragment{{Path:"a.yaml",Root:a},{Path:"b.yaml",Root:b}},yamlconfig.ResolveOptions{Policy:p}); if err != nil {t.Fatal(err)}
+ t.Logf("same policy: ComposeValues keys=%v ResolveFragments keys=%v", direct.Keys(), resolved.Root().Keys())
+ if direct.Len()==resolved.Root().Len() {t.Fatal("probe expected discrepancy")}
+}
+func TestContractReviewArrayOverride(t *testing.T) {
+ root,_ := yamlconfig.Read("a.yaml",[]byte("servers:\n  - host: old\n"))
+ _,err:=yamlconfig.ResolveFragments(context.Background(),[]yamlconfig.Fragment{{Path:"a.yaml",Root:root}},yamlconfig.ResolveOptions{Explicit:[]yamlconfig.Override{yamlconfig.ExplicitSetting(ashlar.Pointer("/servers/0/host"),"cli",ashlar.StringValue("new",ashlar.Provenance{}))}})
+ if err==nil {t.Fatal("probe expected discrepancy")}; t.Log(err)
+}
+func TestContractReviewNestedJSONLocation(t *testing.T) {
+ d,_:=jsoncontract.Read("a.json",[]byte("{\n  \"items\": [{\"port\": \"wrong\"}]\n}"))
+ var dst struct{Items []struct{Port int `json:"port"`} `json:"items"`}
+ err:=d.DecodeStrict(&dst); var ae *ashlar.Error; if !errors.As(err,&ae){t.Fatal(err)}
+ t.Logf("pointer=%q location=%s",ae.Pointer,ae.Origin.Location())
+ if ae.Pointer=="/items/0/port" {t.Fatal("probe expected discrepancy")}
+}
+func TestContractReviewSecretEnvError(t *testing.T) {
+ root,_:=yamlconfig.Read("a.yaml",[]byte("secret: false\n"))
+ _,err:=yamlconfig.ResolveFragments(context.Background(),[]yamlconfig.Fragment{{Root:root}},yamlconfig.ResolveOptions{Env:yamlconfig.EnvBinding{Bindings:map[ashlar.Pointer]string{"/secret":"SECRET"},Lookup:func(string)(string,bool){return "sensitive-probe",true}}})
+ if err==nil || !strings.Contains(err.Error(),"sensitive-probe") {t.Fatalf("probe expected leak: %v",err)}; t.Log(err)
+}
+func TestContractReviewContainerOrigin(t *testing.T) {
+ v,_:=ashlar.ObjectValue([]ashlar.Member{{Key:"port",Value:ashlar.StringValue("80",ashlar.Provenance{})}},ashlar.Provenance{})
+ r,err:=yamlconfig.ResolveFragments(context.Background(),nil,yamlconfig.ResolveOptions{Defaults:[]yamlconfig.Override{yamlconfig.DefaultSetting("/service","app",v)}});if err!=nil{t.Fatal(err)}
+ t.Logf("container origin=%v child origin=%v",r.Root().At("/service").Provenance().Effective,r.Root().At("/service/port").Provenance().Effective)
+ if r.Root().At("/service/port").Provenance().Effective.Valid(){t.Fatal("probe expected missing origin")}
+}
