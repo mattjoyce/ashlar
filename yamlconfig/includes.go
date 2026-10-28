@@ -237,7 +237,7 @@ func (g *graphLoader) checkAndLoadTarget(
 	nextChain := append(append([]string(nil), chain...), targetPath)
 	if g.visited[targetPath] {
 		return ashlar.NewError(
-			ashlar.ErrComposition,
+			ashlar.ErrIncludeCycle,
 			ptr,
 			siteOrigin,
 			fmt.Sprintf("include cycle or duplicate fragment detected: %s", strings.Join(nextChain, " -> ")),

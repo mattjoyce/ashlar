@@ -20,6 +20,7 @@ var (
 
 	ErrComposition  = errors.New("ashlar: composition error")
 	ErrIncludeCycle = fmt.Errorf("%w: include cycle", ErrComposition)
+	ErrUnresolved   = fmt.Errorf("%w: unresolved required value", ErrComposition)
 
 	ErrValidation = errors.New("ashlar: validation error")
 	ErrNotFound   = errors.New("ashlar: source not found")
