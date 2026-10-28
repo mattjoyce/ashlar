@@ -133,6 +133,85 @@ service:
 	}
 }
 
+func TestExplicitSettingKeepsLexicalKeyOrigin(t *testing.T) {
+	t.Parallel()
+
+	servicePtr := ashlar.NewPointer("service")
+
+	root, err := yamlconfig.Read("a.yaml", []byte("service:\n  port: 80\n"))
+	if err != nil {
+		t.Fatalf("Read(a.yaml) error = %v", err)
+	}
+	svc := root.At(servicePtr)
+	if svc.IsOmitted() {
+		t.Fatalf("root.At(/service) is omitted, want object")
+	}
+
+	resolved, err := yamlconfig.ResolveFragments(context.Background(), nil, yamlconfig.ResolveOptions{
+		Explicit: []yamlconfig.Override{
+			yamlconfig.ExplicitSetting(servicePtr, "cli", svc),
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResolveFragments() unexpected error: %v", err)
+	}
+
+	resolvedSvc := resolved.Root().At(servicePtr)
+	if resolvedSvc.IsOmitted() {
+		t.Fatalf("resolved.Root().At(/service) is omitted, want object")
+	}
+
+	// A key parsed from a.yaml keeps its lexical origin: it still records the
+	// line that wrote the key even though the override layer stamped the value.
+	syntheticPort, ok := resolvedSvc.LookupMember("port")
+	if !ok {
+		t.Fatalf("LookupMember(/service/port) not found")
+	}
+	if got := syntheticPort.KeyOrigin.Location(); !strings.HasPrefix(got, "a.yaml:") {
+		t.Errorf("KeyOrigin.Location() = %q, want prefix %q", got, "a.yaml:")
+	}
+	if got := resolvedSvc.Provenance().Effective.String(); !strings.Contains(got, "cli") {
+		t.Errorf("resolved /service Provenance().Effective.String() = %q, want to contain %q", got, "cli")
+	}
+
+	// A key with no origin yet, built in code, receives the explicit origin.
+	built, err := ashlar.ObjectValue([]ashlar.Member{{
+		Key:   "port",
+		Value: ashlar.StringValue("80", ashlar.Provenance{}),
+	}}, ashlar.Provenance{})
+	if err != nil {
+		t.Fatalf("ObjectValue(port) unexpected error: %v", err)
+	}
+	builtSvc, err := ashlar.ObjectValue([]ashlar.Member{{
+		Key:   "service",
+		Value: built,
+	}}, ashlar.Provenance{})
+	if err != nil {
+		t.Fatalf("ObjectValue() unexpected error: %v", err)
+	}
+
+	resolvedBuilt, err := yamlconfig.ResolveFragments(context.Background(), nil, yamlconfig.ResolveOptions{
+		Explicit: []yamlconfig.Override{
+			yamlconfig.ExplicitSetting(ashlar.RootPointer, "cli", builtSvc),
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResolveFragments(built) unexpected error: %v", err)
+	}
+
+	builtResolvedSvc := resolvedBuilt.Root().At(servicePtr)
+	if builtResolvedSvc.IsOmitted() {
+		t.Fatalf("resolved.Root().At(/service) (built) is omitted, want object")
+	}
+	builtPort, ok := builtResolvedSvc.LookupMember("port")
+	if !ok {
+		t.Fatalf("LookupMember(/service/port) (built) not found")
+	}
+	if got := builtPort.KeyOrigin.String(); !strings.Contains(got, "cli") {
+		t.Errorf("built KeyOrigin.String() = %q, want to contain %q", got, "cli")
+	}
+}
+
 func TestResolveFailsClosedOnUnresolvedEnvOrMissingRequired(t *testing.T) {
 	t.Parallel()
 

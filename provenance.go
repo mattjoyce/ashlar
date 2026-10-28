@@ -278,8 +278,10 @@ func freezeSensitivityAt(v Value, ptr Pointer, parentSensitive bool, r Redactor)
 }
 
 // StampLayerOrigin returns a copy of v where orig and sensitive are recursively
-// applied to v and all descendant nodes and object member keys. Any pre-existing
-// distinct origin on a node is preserved in its Superseded provenance chain.
+// applied to v and all descendant nodes. Object member keys keep an existing
+// KeyOrigin, which records where the key was written; only keys without one
+// receive orig. Any pre-existing distinct origin on a node is preserved in its
+// Superseded provenance chain.
 func (v Value) StampLayerOrigin(orig Origin, sensitive bool) Value {
 	if v.IsOmitted() {
 		return v
