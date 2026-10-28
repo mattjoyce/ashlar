@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "stream_id": "edge-sensors-west",
+  "calibration_ratio": 1.0,
+  "gain_scale": 1e0,
+  "high_watermark": 18446744073709551615,
+  "compression_level": 0,
+  "notes": null
+}

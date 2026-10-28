@@ -1,0 +1,16 @@
+include:
+  - routes.yaml
+  - plugins.yaml
+
+service:
+  name: relayd
+  listen_addr: 127.0.0.1:8080
+  max_workers: 8
+
+auth:
+  token_ref: vault://relayd/ingest-token
+  signing_secret: "${RELAYD_SIGNING_SECRET}"
+
+routes:
+  - from: /healthz
+    to: internal

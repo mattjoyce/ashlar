@@ -1,0 +1,5 @@
+routes:
+  - from: /v1/telemetry
+    to: archive
+  - from: /v1/alerts
+    to: pager

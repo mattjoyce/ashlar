@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/relayd/manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "stream_id",
+    "calibration_ratio",
+    "gain_scale",
+    "high_watermark"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "stream_id": { "type": "string", "minLength": 1 },
+    "calibration_ratio": { "type": "number" },
+    "gain_scale": { "type": "number" },
+    "high_watermark": { "type": "integer" },
+    "compression_level": { "type": "integer", "minimum": 0 },
+    "sampling_rate": { "type": "number", "minimum": 0 },
+    "notes": { "type": ["string", "null"] }
+  }
+}

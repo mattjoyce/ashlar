@@ -1,0 +1,7 @@
+plugins:
+  archive:
+    enabled: true
+    entrypoint: bin/archive-sink
+  pager:
+    enabled: true
+    entrypoint: bin/pager-sink

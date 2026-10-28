@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/relayd/config.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["service", "auth", "routes", "plugins"],
+  "properties": {
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "listen_addr", "tick_interval", "max_workers"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "listen_addr": { "type": "string", "minLength": 1 },
+        "tick_interval": { "type": "string", "minLength": 2 },
+        "max_workers": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token_ref", "signing_secret"],
+      "properties": {
+        "token_ref": { "type": "string", "minLength": 1 },
+        "signing_secret": { "type": "string", "minLength": 1 }
+      }
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to"],
+        "properties": {
+          "from": { "type": "string", "minLength": 1 },
+          "to": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "plugins": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["enabled", "entrypoint"],
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "entrypoint": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
