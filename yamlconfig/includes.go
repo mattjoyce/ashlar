@@ -12,6 +12,15 @@ import (
 	"github.com/mattjoyce/ashlar"
 )
 
+// withheldHookError wraps an error returned by a caller-supplied hook. Its
+// Error text never includes the hook's message, which may carry secret
+// material; errors.Is and errors.As still reach the original error.
+type withheldHookError struct{ err error }
+
+func (e withheldHookError) Error() string { return "hook error withheld from diagnostics" }
+
+func (e withheldHookError) Unwrap() error { return e.err }
+
 // ByteTransformer is a narrow hook invoked on raw file bytes before YAML or
 // environment file parsing (e.g., for in-memory age decryption).
 type ByteTransformer func(ctx context.Context, path string, raw []byte) ([]byte, error)
@@ -159,7 +168,7 @@ func (g *graphLoader) readAndVerify(
 				ashlar.RootPointer,
 				orig,
 				fmt.Sprintf("integrity verification failed for %q", cleanPath),
-				err,
+				withheldHookError{err: err},
 			)
 		}
 	}
@@ -171,7 +180,7 @@ func (g *graphLoader) readAndVerify(
 				ashlar.RootPointer,
 				orig,
 				fmt.Sprintf("transform bytes for %q", cleanPath),
-				err,
+				withheldHookError{err: err},
 			)
 		}
 		raw = transformed

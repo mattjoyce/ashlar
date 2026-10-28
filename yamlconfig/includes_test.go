@@ -3,14 +3,18 @@ package yamlconfig_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/mattjoyce/ashlar"
 	"github.com/mattjoyce/ashlar/yamlconfig"
 )
+
+var errHookSentinel = errors.New("hook sentinel")
 
 func TestLoadIncludeGraphAndRelativePaths(t *testing.T) {
 	t.Parallel()
@@ -143,6 +147,66 @@ func TestLoadIncludeGraphRejectsDirectAndIndirectCycles(t *testing.T) {
 	if !errors.Is(err, ashlar.ErrComposition) {
 		t.Fatalf("Verifier failure error = %v, want ErrComposition", err)
 	}
+}
+
+func TestIncludeHookErrorsAreWithheld(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"config.yaml": &fstest.MapFile{Data: []byte("service:\n  name: ok\n")},
+	}
+
+	t.Run("Verifier", func(t *testing.T) {
+		t.Parallel()
+		_, err := yamlconfig.LoadIncludeGraph(context.Background(), fsys, "config.yaml", yamlconfig.IncludeOptions{
+			Verifier: func(_ context.Context, _ string, _ []byte) error {
+				return fmt.Errorf("%w: key=hook-secret-material", errHookSentinel)
+			},
+		})
+		if !errors.Is(err, ashlar.ErrComposition) {
+			t.Fatalf("error = %v, want ErrComposition", err)
+		}
+		if !errors.Is(err, errHookSentinel) {
+			t.Fatalf("caller should reach its own error via errors.Is: %v", err)
+		}
+		for _, format := range []func() string{err.Error, func() string { return fmt.Sprintf("%v", err) }, func() string { return fmt.Sprintf("%+v", err) }, func() string { return fmt.Sprintf("%q", err) }} {
+			if strings.Contains(format(), "hook-secret-material") {
+				t.Fatalf("hook-secret-material leaked in formatted error: %v", err)
+			}
+		}
+		if !strings.Contains(err.Error(), "hook error withheld from diagnostics") {
+			t.Errorf("Error() should contain withheld marker: %v", err)
+		}
+		if !strings.Contains(err.Error(), "config.yaml") {
+			t.Errorf("Error() should contain file path: %v", err)
+		}
+	})
+
+	t.Run("Transformer", func(t *testing.T) {
+		t.Parallel()
+		_, err := yamlconfig.LoadIncludeGraph(context.Background(), fsys, "config.yaml", yamlconfig.IncludeOptions{
+			Transformer: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				return nil, fmt.Errorf("%w: key=hook-secret-material", errHookSentinel)
+			},
+		})
+		if !errors.Is(err, ashlar.ErrComposition) {
+			t.Fatalf("error = %v, want ErrComposition", err)
+		}
+		if !errors.Is(err, errHookSentinel) {
+			t.Fatalf("caller should reach its own error via errors.Is: %v", err)
+		}
+		for _, format := range []func() string{err.Error, func() string { return fmt.Sprintf("%v", err) }, func() string { return fmt.Sprintf("%+v", err) }, func() string { return fmt.Sprintf("%q", err) }} {
+			if strings.Contains(format(), "hook-secret-material") {
+				t.Fatalf("hook-secret-material leaked in formatted error: %v", err)
+			}
+		}
+		if !strings.Contains(err.Error(), "hook error withheld from diagnostics") {
+			t.Errorf("Error() should contain withheld marker: %v", err)
+		}
+		if !strings.Contains(err.Error(), "config.yaml") {
+			t.Errorf("Error() should contain file path: %v", err)
+		}
+	})
 }
 
 func TestPathPrimitivesAndDiscovery(t *testing.T) {
