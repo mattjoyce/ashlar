@@ -116,6 +116,17 @@ type Redactor interface {
 
 // RedactorFunc adapts a function to the Redactor interface.
 type RedactorFunc func(ptr Pointer, key string) bool
+
+// DefaultRedactor returns a Redactor that matches common secret key names
+// (token, api_key, secret, password, credential, private_key) case-insensitively
+// after normalizing hyphens to underscores, while allowing non-secret reference keys
+// (such as secret_ref or token_file) when configured by the caller.
+func DefaultRedactor() Redactor
+
+// SecretFingerprint computes a non-reversible, domain-separated SHA-256 fingerprint
+// ("secretfp_sha256:<hex>") over a purpose/path label and secret value so callers can
+// track secret rotation and provenance without storing or logging raw secret material.
+func SecretFingerprint(purpose, value string) string
 ```
 
 #### Immutable Value, Presence & Provenance (`1.4`)
@@ -283,6 +294,35 @@ type Candidate struct {
 // Discover resolves the first existing configuration file from candidates, enforcing Required semantics.
 func Discover(candidates ...Candidate) (path string, origin ashlar.Origin, err error)
 
+// SymlinkWarning captures a path that resolves through a symbolic link.
+type SymlinkWarning struct {
+	Path     string
+	Resolved string
+}
+
+// ExpandPath expands leading "~" / "~/" (rejecting "~user") and cleans the path into an absolute path.
+func ExpandPath(path string) (string, error)
+
+// ResolveRegularFile expands path, resolves symlinks, and verifies the target is a regular file.
+func ResolveRegularFile(path string) (string, error)
+
+// DetectSymlinks reports any paths in the slice whose EvalSymlinks target differs from the cleaned path.
+func DetectSymlinks(paths []string) ([]SymlinkWarning, error)
+
+// ComputeFileHash returns the SHA-256 digest of a file formatted as "sha256:<hex>".
+func ComputeFileHash(path string) (string, error)
+
+// ComputeKeyedFileHash returns the HMAC-SHA256 digest of a file using a 32-byte key as "sha256:<hex>".
+func ComputeKeyedFileHash(path string, key []byte) (string, error)
+
+// ParseDotEnv parses a .env byte stream (supporting comments, optional "export " prefix, and quoted values)
+// into key-value pairs with line-located syntax errors.
+func ParseDotEnv(source string, raw []byte) (map[string]string, error)
+
+// ParseByteSize parses human-readable byte counts ("1024", "512KB", "64MB", "1GB") with overflow checks,
+// preserving the original input string in diagnostics.
+func ParseByteSize(raw string) (int64, error)
+
 // Resolved is an immutable, composed runtime configuration value with full provenance.
 type Resolved struct {
 	// Unexported root ashlar.Value, included file list, and Redactor.
@@ -290,6 +330,7 @@ type Resolved struct {
 
 func (r Resolved) Root() ashlar.Value
 func (r Resolved) Files() []string
+func (r Resolved) SourceHash() (string, error)
 func (r Resolved) DecodeStrict(dst any) error
 func (r Resolved) Explain(ptr ashlar.Pointer) string
 ```
