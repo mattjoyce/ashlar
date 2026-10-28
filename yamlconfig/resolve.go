@@ -10,7 +10,13 @@ import (
 )
 
 // Override binds an RFC 6901 Pointer to a single scalar or container Value at a
-// declared precedence layer (default or explicit override).
+// declared precedence layer (default, environment, or explicit override).
+//
+// An Override is a targeted update: only the node at Pointer changes, and
+// sibling members and elements of its ancestors are kept. The composition rule
+// for Pointer itself is applied as in fragment composition. An existing
+// ancestor whose rule is MergeForbidDuplicate rejects the update with
+// ErrComposition; ancestors that do not yet exist are created.
 type Override struct {
 	Pointer ashlar.Pointer
 	Value   ashlar.Value
@@ -162,6 +168,22 @@ func applyOverrideAt(
 			return leaf, nil
 		}
 		return composeNode(policy, ptr, cur, leaf)
+	}
+
+	// Enforce a MergeForbidDuplicate rule on the way down: an existing
+	// ancestor the walk passes through rejects the targeted update. Omitted
+	// ancestors (KindInvalid) are being created and have no prior definition,
+	// so they are not checked.
+	if cur.Kind() == ashlar.KindObject || cur.Kind() == ashlar.KindArray {
+		if policy.ruleFor(ptr, cur.Kind()) == MergeForbidDuplicate {
+			return ashlar.Value{}, conflictError(
+				ptr,
+				cur,
+				leaf,
+				fmt.Sprintf("override beneath %q is forbidden by composition policy (first defined at %s)",
+					ptrOrRoot(ptr), cur.Provenance().Effective.Location()),
+			)
+		}
 	}
 
 	head := tokens[0]

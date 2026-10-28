@@ -241,3 +241,178 @@ PLAIN_VAR=hello
 		}
 	}
 }
+
+func TestOverrideAncestorPolicy(t *testing.T) {
+	t.Parallel()
+
+	const overrideValue = "override-value"
+
+	forbid := func(ptr ashlar.Pointer) yamlconfig.CompositionPolicy {
+		policy := yamlconfig.DefaultCompositionPolicy()
+		policy.Rules[ptr] = yamlconfig.MergeForbidDuplicate
+		return policy
+	}
+	explicit := func(ptr ashlar.Pointer) yamlconfig.Override {
+		return yamlconfig.ExplicitSetting(ptr, "override", ashlar.StringValue(overrideValue, ashlar.Provenance{}))
+	}
+	scalar := func(at ashlar.Pointer) func(t *testing.T, r yamlconfig.Resolved) {
+		return func(t *testing.T, r yamlconfig.Resolved) {
+			t.Helper()
+			if got, _ := r.Root().At(at).StringVal(); got != overrideValue {
+				t.Errorf("At(%s) = %q, want %q", at, got, overrideValue)
+			}
+		}
+	}
+
+	tests := []struct {
+		name    string
+		fragYML string
+		policy  yamlconfig.CompositionPolicy
+		opts    yamlconfig.ResolveOptions
+		reject  bool
+		check   func(t *testing.T, r yamlconfig.Resolved)
+	}{
+		{
+			name:    "explicit under forbid",
+			fragYML: "locked:\n  x: old\n",
+			policy:  forbid(ashlar.NewPointer("locked")),
+			opts: yamlconfig.ResolveOptions{
+				Explicit: []yamlconfig.Override{explicit(ashlar.NewPointer("locked", "x"))},
+			},
+			reject: true,
+		},
+		{
+			name:    "env under forbid",
+			fragYML: "locked:\n  x: old\n",
+			policy:  forbid(ashlar.NewPointer("locked")),
+			opts: yamlconfig.ResolveOptions{
+				Env: yamlconfig.EnvBinding{
+					Bindings: map[ashlar.Pointer]string{ashlar.NewPointer("locked", "x"): "LOCKED_X"},
+					Lookup:   func(string) (string, bool) { return overrideValue, true },
+				},
+			},
+			reject: true,
+		},
+		{
+			name:    "deep under forbid",
+			fragYML: "locked:\n  inner:\n    y: old\n",
+			policy:  forbid(ashlar.NewPointer("locked")),
+			opts: yamlconfig.ResolveOptions{
+				Explicit: []yamlconfig.Override{explicit(ashlar.NewPointer("locked", "inner", "y"))},
+			},
+			reject: true,
+		},
+		{
+			name:    "pattern forbid",
+			fragYML: "plugins:\n  a:\n    x: old\n",
+			policy: func() yamlconfig.CompositionPolicy {
+				policy := yamlconfig.DefaultCompositionPolicy()
+				policy.PatternRules = []yamlconfig.PatternMergeRule{
+					{Pattern: "/plugins/*", Rule: yamlconfig.MergeForbidDuplicate},
+				}
+				return policy
+			}(),
+			opts: yamlconfig.ResolveOptions{
+				Explicit: []yamlconfig.Override{explicit(ashlar.NewPointer("plugins", "a", "x"))},
+			},
+			reject: true,
+		},
+		{
+			name:    "array forbid",
+			fragYML: "items:\n  - x: old\n",
+			policy:  forbid(ashlar.NewPointer("items")),
+			opts: yamlconfig.ResolveOptions{
+				Explicit: []yamlconfig.Override{explicit(ashlar.NewPointer("items", "0", "x"))},
+			},
+			reject: true,
+		},
+		{
+			name:   "two defaults under forbid",
+			policy: forbid(ashlar.NewPointer("locked")),
+			opts: yamlconfig.ResolveOptions{
+				Defaults: []yamlconfig.Override{
+					yamlconfig.DefaultSetting(ashlar.NewPointer("locked", "a"), "a", ashlar.StringValue(overrideValue, ashlar.Provenance{})),
+					yamlconfig.DefaultSetting(ashlar.NewPointer("locked", "b"), "b", ashlar.StringValue(overrideValue, ashlar.Provenance{})),
+				},
+			},
+			reject: true,
+		},
+		{
+			name:   "absent ancestor created",
+			policy: forbid(ashlar.NewPointer("locked")),
+			opts: yamlconfig.ResolveOptions{
+				Explicit: []yamlconfig.Override{explicit(ashlar.NewPointer("locked", "x"))},
+			},
+			check: scalar(ashlar.NewPointer("locked", "x")),
+		},
+		{
+			name:    "replace keeps siblings",
+			fragYML: "service:\n  host: old\n  port: 80\n",
+			policy: func() yamlconfig.CompositionPolicy {
+				policy := yamlconfig.DefaultCompositionPolicy()
+				policy.Rules[ashlar.NewPointer("service")] = yamlconfig.MergeReplace
+				return policy
+			}(),
+			opts: yamlconfig.ResolveOptions{
+				Explicit: []yamlconfig.Override{explicit(ashlar.NewPointer("service", "host"))},
+			},
+			check: func(t *testing.T, r yamlconfig.Resolved) {
+				t.Helper()
+				scalar(ashlar.NewPointer("service", "host"))(t, r)
+				if got, _ := r.Root().At(ashlar.NewPointer("service", "port")).Int64(); got != 80 {
+					t.Errorf("At(/service/port) = %d, want 80", got)
+				}
+			},
+		},
+		{
+			name:    "map keeps siblings",
+			fragYML: "service:\n  host: old\n  port: 80\n",
+			policy:  yamlconfig.DefaultCompositionPolicy(),
+			opts: yamlconfig.ResolveOptions{
+				Explicit: []yamlconfig.Override{explicit(ashlar.NewPointer("service", "host"))},
+			},
+			check: func(t *testing.T, r yamlconfig.Resolved) {
+				t.Helper()
+				scalar(ashlar.NewPointer("service", "host"))(t, r)
+				if got, _ := r.Root().At(ashlar.NewPointer("service", "port")).Int64(); got != 80 {
+					t.Errorf("At(/service/port) = %d, want 80", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var fragments []yamlconfig.Fragment
+			if tt.fragYML != "" {
+				root, err := yamlconfig.Read(tt.name+".yaml", []byte(tt.fragYML))
+				if err != nil {
+					t.Fatalf("Read(%s) error = %v", tt.name+".yaml", err)
+				}
+				fragments = []yamlconfig.Fragment{{Path: tt.name + ".yaml", Root: root}}
+			}
+
+			opts := tt.opts
+			opts.Policy = tt.policy
+			resolved, err := yamlconfig.ResolveFragments(context.Background(), fragments, opts)
+			if tt.reject {
+				if !errors.Is(err, ashlar.ErrComposition) {
+					t.Fatalf("ResolveFragments() error = %v, want ErrComposition", err)
+				}
+				if strings.Contains(err.Error(), overrideValue) {
+					t.Fatalf("ResolveFragments() error leaked override value %q: %v", overrideValue, err)
+				}
+				if !resolved.Root().IsOmitted() {
+					t.Fatalf("resolved.Root() = %v, want omitted on rejection", resolved.Root().Summary(ashlar.DefaultRedactor(), ashlar.RootPointer))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveFragments() unexpected error: %v", err)
+			}
+			tt.check(t, resolved)
+		})
+	}
+}
