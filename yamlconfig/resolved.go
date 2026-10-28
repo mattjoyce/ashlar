@@ -44,29 +44,35 @@ func (r Resolved) DecodeStrict(dst any) error {
 	return DecodeValueStrict(r.root, dst)
 }
 
+// frozenOnly classifies nothing as sensitive by key, so Resolved formatting
+// relies solely on the sensitivity frozen into each node at resolution time.
+var frozenOnly ashlar.Redactor = ashlar.RedactorFunc(func(ashlar.Pointer, string) bool { return false })
+
 // Explain formats a human-readable provenance summary for the value at ptr,
-// honoring the sensitivity frozen at resolution time.
+// using only the sensitivity frozen at resolution time.
 func (r Resolved) Explain(ptr ashlar.Pointer) string {
-	return r.root.At(ptr).Explain(nil, ptr)
+	return r.root.At(ptr).Explain(frozenOnly, ptr)
 }
 
 // ExplainAll returns the provenance explanation for every leaf field in r in
-// deterministic declaration order, honoring frozen secret redaction.
+// deterministic declaration order, using only the sensitivity frozen at
+// resolution time.
 func (r Resolved) ExplainAll() []ashlar.FieldProvenance {
-	return r.root.ExplainAll(nil)
+	return r.root.ExplainAll(frozenOnly)
 }
 
 // FormatProvenanceReport renders a multi-line provenance report for every leaf
-// field in r, honoring frozen secret redaction.
+// field in r, using only the sensitivity frozen at resolution time.
 func (r Resolved) FormatProvenanceReport() string {
-	return r.root.FormatProvenanceReport(nil)
+	return r.root.FormatProvenanceReport(frozenOnly)
 }
 
 // Sanitize returns a copy of r.Root() where every sensitive scalar or subtree
 // is replaced with ashlar.RedactedLiteral (or a domain-separated
 // ashlar.SecretFingerprint when useFingerprint is true).
+// It uses only the sensitivity frozen at resolution time.
 func (r Resolved) Sanitize(useFingerprint bool) ashlar.Value {
-	return r.root.Sanitize(nil, useFingerprint)
+	return r.root.Sanitize(frozenOnly, useFingerprint)
 }
 
 func computeFragmentsHash(fragments []Fragment) ([]string, string) {

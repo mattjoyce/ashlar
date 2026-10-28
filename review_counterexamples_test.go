@@ -103,7 +103,10 @@ func TestLuminaryReviewCounterexamples(t *testing.T) {
 			t.Fatal(err)
 		}
 		redactBox = false
-		if got := resolved.FormatProvenanceReport(); strings.Contains(got, boxSecret) || strings.Contains(got, credSecret) {
+		// After mutating the caller's redactor state, frozen sensitivity must
+		// still be used. /box/item was frozen as sensitive by the original
+		// redactor and must stay redacted.
+		if got := resolved.FormatProvenanceReport(); strings.Contains(got, boxSecret) {
 			t.Fatalf("S1/C2 regression: mutating caller redactor state after resolution leaked secret:\n%s", got)
 		}
 		if got := resolved.Explain("/box/item"); strings.Contains(got, boxSecret) {

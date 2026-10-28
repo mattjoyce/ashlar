@@ -495,3 +495,110 @@ func TestOverrideAncestorPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestResolvedReportsUseFrozenClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		yaml     string
+		redactor ashlar.Redactor
+		ptr      ashlar.Pointer
+		value    string // the raw value string to check for
+		visible  bool   // true = value visible in output, false = REDACTED
+	}{
+		{
+			name:     "custom public",
+			yaml:     "token: public-label",
+			redactor: ashlar.RedactorFunc(func(ashlar.Pointer, string) bool { return false }),
+			ptr:      ashlar.NewPointer("token"),
+			value:    "public-label",
+			visible:  true,
+		},
+		{
+			name:     "custom adds key",
+			yaml:     "label: hidden-value",
+			redactor: ashlar.RedactorFunc(func(_ ashlar.Pointer, key string) bool { return key == "label" }),
+			ptr:      ashlar.NewPointer("label"),
+			value:    "hidden-value",
+			visible:  false,
+		},
+		{
+			name:     "default policy",
+			yaml:     "token: tok-sekrit",
+			redactor: nil,
+			ptr:      ashlar.NewPointer("token"),
+			value:    "tok-sekrit",
+			visible:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root, err := yamlconfig.Read(tt.name+".yaml", []byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("Read(%s) error = %v", tt.name+".yaml", err)
+			}
+
+			p := yamlconfig.DefaultCompositionPolicy()
+			p.Redactor = tt.redactor
+			resolved, err := yamlconfig.ResolveFragments(context.Background(), []yamlconfig.Fragment{
+				{Path: tt.name + ".yaml", Root: root},
+			}, yamlconfig.ResolveOptions{Policy: p})
+			if err != nil {
+				t.Fatalf("ResolveFragments() error = %v", err)
+			}
+
+			// Check Explain
+			explain := resolved.Explain(tt.ptr)
+			if tt.visible {
+				if !strings.Contains(explain, tt.value) {
+					t.Errorf("Explain(%s) = %q, want to contain value %q", tt.ptr, explain, tt.value)
+				}
+				if strings.Contains(explain, ashlar.RedactedLiteral) {
+					t.Errorf("Explain(%s) = %q, should not contain %s", tt.ptr, explain, ashlar.RedactedLiteral)
+				}
+			} else {
+				if !strings.Contains(explain, ashlar.RedactedLiteral) {
+					t.Errorf("Explain(%s) = %q, want to contain %s", tt.ptr, explain, ashlar.RedactedLiteral)
+				}
+				if strings.Contains(explain, tt.value) {
+					t.Errorf("Explain(%s) = %q, should not contain secret %q", tt.ptr, explain, tt.value)
+				}
+			}
+
+			// Check FormatProvenanceReport
+			report := resolved.FormatProvenanceReport()
+			if tt.visible {
+				if !strings.Contains(report, tt.value) {
+					t.Errorf("FormatProvenanceReport() = %q, want to contain value %q", report, tt.value)
+				}
+				if strings.Contains(report, ashlar.RedactedLiteral) {
+					t.Errorf("FormatProvenanceReport() = %q, should not contain %s", report, ashlar.RedactedLiteral)
+				}
+			} else {
+				if !strings.Contains(report, ashlar.RedactedLiteral) {
+					t.Errorf("FormatProvenanceReport() = %q, want to contain %s", report, ashlar.RedactedLiteral)
+				}
+				if strings.Contains(report, tt.value) {
+					t.Errorf("FormatProvenanceReport() = %q, should not contain secret %q", report, tt.value)
+				}
+			}
+
+			// Check Sanitize
+			sanitized := resolved.Sanitize(false)
+			sanitizedStr, _ := sanitized.At(tt.ptr).StringVal()
+			if tt.visible {
+				if sanitizedStr != tt.value {
+					t.Errorf("Sanitize(false).At(%s) = %q, want %q", tt.ptr, sanitizedStr, tt.value)
+				}
+			} else {
+				if sanitizedStr != ashlar.RedactedLiteral {
+					t.Errorf("Sanitize(false).At(%s) = %q, want %s", tt.ptr, sanitizedStr, ashlar.RedactedLiteral)
+				}
+			}
+		})
+	}
+}
