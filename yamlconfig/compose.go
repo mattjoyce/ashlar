@@ -2,6 +2,7 @@ package yamlconfig
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/mattjoyce/ashlar"
@@ -26,6 +27,9 @@ const (
 	// one fragment.
 	MergeForbidDuplicate
 )
+
+// known reports whether r is one of the defined MergeRule values.
+func (r MergeRule) known() bool { return r <= MergeForbidDuplicate }
 
 // String returns a human-readable name for r.
 func (r MergeRule) String() string {
@@ -90,6 +94,28 @@ func (p CompositionPolicy) redactor() ashlar.Redactor {
 }
 
 func (p CompositionPolicy) validate() error {
+	for _, f := range []struct {
+		name string
+		rule MergeRule
+	}{
+		{"ObjectRule", p.ObjectRule},
+		{"ArrayRule", p.ArrayRule},
+		{"ScalarRule", p.ScalarRule},
+	} {
+		if !f.rule.known() {
+			return unknownRuleError(fmt.Sprintf("unsupported MergeRule %d in CompositionPolicy.%s", f.rule, f.name))
+		}
+	}
+	for _, ptr := range sortedRulePointers(p.Rules) {
+		if r := p.Rules[ptr]; !r.known() {
+			return unknownRuleError(fmt.Sprintf("unsupported MergeRule %d in CompositionPolicy.Rules[%q]", r, ptr))
+		}
+	}
+	for i, pr := range p.PatternRules {
+		if !pr.Rule.known() {
+			return unknownRuleError(fmt.Sprintf("unsupported MergeRule %d in CompositionPolicy.PatternRules[%d] (%q)", pr.Rule, i, pr.Pattern))
+		}
+	}
 	for ptr := range p.Rules {
 		if !ptr.Valid() {
 			return ashlar.NewError(
@@ -113,6 +139,23 @@ func (p CompositionPolicy) validate() error {
 		}
 	}
 	return nil
+}
+
+// unknownRuleError builds the ErrComposition diagnostic used when a
+// CompositionPolicy declares a MergeRule value with no defined meaning.
+func unknownRuleError(msg string) error {
+	return ashlar.NewError(ashlar.ErrComposition, ashlar.RootPointer, ashlar.Origin{}, msg, nil)
+}
+
+// sortedRulePointers returns the keys of rules in ascending pointer order so
+// validation reports a deterministic error when several entries are invalid.
+func sortedRulePointers(rules map[ashlar.Pointer]MergeRule) []ashlar.Pointer {
+	ptrs := make([]ashlar.Pointer, 0, len(rules))
+	for ptr := range rules {
+		ptrs = append(ptrs, ptr)
+	}
+	sort.Slice(ptrs, func(i, j int) bool { return ptrs[i] < ptrs[j] })
+	return ptrs
 }
 
 func (p CompositionPolicy) ruleFor(ptr ashlar.Pointer, kind ashlar.Kind) MergeRule {

@@ -1,6 +1,7 @@
 package yamlconfig_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -146,5 +147,113 @@ func TestComposeValuesRejectsForbiddenDuplicatesAndKindConflicts(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "map.yaml:2:3") || !strings.Contains(err.Error(), "scalar.yaml:1:10") {
 		t.Errorf("kind conflict error = %q, want both conflicting locations", err.Error())
+	}
+}
+
+func TestCompositionPolicyRejectsUnknownMergeRule(t *testing.T) {
+	t.Parallel()
+
+	valA, err := yamlconfig.Read("a.yaml", []byte("x: old\n"))
+	if err != nil {
+		t.Fatalf("Read(a.yaml) error = %v", err)
+	}
+	valB, err := yamlconfig.Read("b.yaml", []byte("x: new\n"))
+	if err != nil {
+		t.Fatalf("Read(b.yaml) error = %v", err)
+	}
+	fragA := yamlconfig.Fragment{Path: "a.yaml", Root: valA}
+	fragB := yamlconfig.Fragment{Path: "b.yaml", Root: valB}
+
+	tests := []struct {
+		name         string
+		mutate       func(p *yamlconfig.CompositionPolicy)
+		composeFrags []yamlconfig.Fragment
+		resolveFrags []yamlconfig.Fragment
+		wantErr      bool
+	}{
+		{
+			name:         "ObjectRule",
+			mutate:       func(p *yamlconfig.CompositionPolicy) { p.ObjectRule = yamlconfig.MergeRule(255) },
+			composeFrags: []yamlconfig.Fragment{fragA, fragB},
+			resolveFrags: []yamlconfig.Fragment{fragA},
+			wantErr:      true,
+		},
+		{
+			name:         "ArrayRule",
+			mutate:       func(p *yamlconfig.CompositionPolicy) { p.ArrayRule = yamlconfig.MergeRule(255) },
+			composeFrags: []yamlconfig.Fragment{fragA, fragB},
+			resolveFrags: []yamlconfig.Fragment{fragA},
+			wantErr:      true,
+		},
+		{
+			name:         "ScalarRule",
+			mutate:       func(p *yamlconfig.CompositionPolicy) { p.ScalarRule = yamlconfig.MergeRule(255) },
+			composeFrags: []yamlconfig.Fragment{fragA, fragB},
+			resolveFrags: []yamlconfig.Fragment{fragA},
+			wantErr:      true,
+		},
+		{
+			name:         "Rules[/x]",
+			mutate:       func(p *yamlconfig.CompositionPolicy) { p.Rules[ashlar.NewPointer("x")] = yamlconfig.MergeRule(255) },
+			composeFrags: []yamlconfig.Fragment{fragA, fragB},
+			resolveFrags: []yamlconfig.Fragment{fragA},
+			wantErr:      true,
+		},
+		{
+			name: "PatternRules[/x/*]",
+			mutate: func(p *yamlconfig.CompositionPolicy) {
+				p.PatternRules = []yamlconfig.PatternMergeRule{{Pattern: "/x/*", Rule: yamlconfig.MergeRule(255)}}
+			},
+			composeFrags: []yamlconfig.Fragment{fragA, fragB},
+			resolveFrags: []yamlconfig.Fragment{fragA},
+			wantErr:      true,
+		},
+		{
+			name: "Rules[/x] MergeForbidDuplicate accepted",
+			mutate: func(p *yamlconfig.CompositionPolicy) {
+				p.Rules[ashlar.NewPointer("x")] = yamlconfig.MergeForbidDuplicate
+			},
+			composeFrags: []yamlconfig.Fragment{fragA},
+			resolveFrags: []yamlconfig.Fragment{fragA},
+			wantErr:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := yamlconfig.DefaultCompositionPolicy()
+			tt.mutate(&policy)
+
+			v, err := yamlconfig.ComposeFragments(policy, tt.composeFrags)
+			checkUnknownRuleOutcome(t, v, err, tt.wantErr)
+
+			resolved, err := yamlconfig.ResolveFragments(context.Background(), tt.resolveFrags, yamlconfig.ResolveOptions{Policy: policy})
+			checkUnknownRuleOutcome(t, resolved.Root(), err, tt.wantErr)
+		})
+	}
+}
+
+func checkUnknownRuleOutcome(t *testing.T, v ashlar.Value, err error, wantErr bool) {
+	t.Helper()
+	if wantErr {
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !errors.Is(err, ashlar.ErrComposition) {
+			t.Errorf("error = %v, want ErrComposition", err)
+		}
+		if !strings.Contains(err.Error(), "unsupported MergeRule 255") {
+			t.Errorf("error = %q, want it to contain %q", err.Error(), "unsupported MergeRule 255")
+		}
+		if !v.IsOmitted() {
+			t.Error("returned value should be omitted on rejection")
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v.IsOmitted() {
+		t.Error("returned value should be present on success")
 	}
 }
