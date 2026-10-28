@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"strconv"
 	"strings"
 
 	"github.com/mattjoyce/ashlar"
@@ -203,22 +202,13 @@ func applyOverrideInArray(
 	rest []string,
 	leaf ashlar.Value,
 ) (ashlar.Value, error) {
-	if len(head) > 1 && head[0] == '0' {
+	idx, ok := ashlar.ParseArrayIndex(head)
+	if !ok {
 		return ashlar.Value{}, ashlar.NewError(
 			ashlar.ErrComposition,
 			ptr.Child(head),
 			leaf.Provenance().Effective,
-			fmt.Sprintf("invalid leading zero in array index %q at %q", head, ptrOrRoot(ptr)),
-			nil,
-		)
-	}
-	idx, err := strconv.Atoi(head)
-	if err != nil || idx < 0 {
-		return ashlar.Value{}, ashlar.NewError(
-			ashlar.ErrComposition,
-			ptr.Child(head),
-			leaf.Provenance().Effective,
-			fmt.Sprintf("cannot index array at %q with non-integer token %q", ptrOrRoot(ptr), head),
+			fmt.Sprintf("invalid array index %q at %q", head, ptrOrRoot(ptr)),
 			nil,
 		)
 	}

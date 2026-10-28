@@ -170,6 +170,49 @@ func TestResolveFailsClosedOnUnresolvedEnvOrMissingRequired(t *testing.T) {
 	}
 }
 
+func TestOverrideArrayIndexGrammar(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.yaml"), []byte("items: [old]\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	build := func(ptr string) yamlconfig.ResolveOptions {
+		return yamlconfig.ResolveOptions{
+			Explicit: []yamlconfig.Override{
+				yamlconfig.ExplicitSetting(ashlar.Pointer(ptr), "--override", ashlar.StringValue("new", ashlar.Provenance{})),
+			},
+		}
+	}
+
+	// /items/0 succeeds.
+	_, err := yamlconfig.Resolve(context.Background(), os.DirFS(dir), "a.yaml", build("/items/0"))
+	if err != nil {
+		t.Errorf("/items/0 should succeed, got: %v", err)
+	}
+
+	rows := []string{"/items/+0", "/items/-0", "/items/00", "/items/x"}
+	for _, ptr := range rows {
+		_, err := yamlconfig.Resolve(context.Background(), os.DirFS(dir), "a.yaml", build(ptr))
+		if !errors.Is(err, ashlar.ErrComposition) {
+			t.Errorf("%s error = %v, want ErrComposition", ptr, err)
+		}
+		if !strings.Contains(err.Error(), "invalid array index") {
+			t.Errorf("%s message = %q, want 'invalid array index'", ptr, err.Error())
+		}
+	}
+
+	// /items/1 fails with out of bounds.
+	_, err = yamlconfig.Resolve(context.Background(), os.DirFS(dir), "a.yaml", build("/items/1"))
+	if !errors.Is(err, ashlar.ErrComposition) {
+		t.Errorf("/items/1 error = %v, want ErrComposition", err)
+	}
+	if !strings.Contains(err.Error(), "out of bounds") {
+		t.Errorf("/items/1 message = %q, want 'out of bounds'", err.Error())
+	}
+}
+
 func TestParseDotEnv(t *testing.T) {
 	t.Parallel()
 

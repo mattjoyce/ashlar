@@ -10,6 +10,9 @@ import (
 // ErrPointer is returned when an RFC 6901 JSON Pointer is syntactically invalid.
 var ErrPointer = errors.New("ashlar: invalid json pointer")
 
+// maxInt is the maximum value of int on this platform.
+const maxInt = int(^uint(0) >> 1)
+
 // Pointer is an RFC 6901 JSON Pointer (e.g., "", "/service/tick_interval", "/routes/0/from").
 type Pointer string
 
@@ -105,6 +108,31 @@ func (p Pointer) LastToken() string {
 	return unescapeToken(string(p)[idx+1:])
 }
 
+// ParseArrayIndex reports whether tok is a valid RFC 6901 array index ("0" or
+// a nonzero decimal digit followed by decimal digits, with no sign or
+// whitespace) and returns its value. Tokens that overflow int are invalid.
+func ParseArrayIndex(tok string) (int, bool) {
+	if tok == "" {
+		return 0, false
+	}
+	if tok[0] == '0' && len(tok) > 1 {
+		return 0, false // RFC 6901 forbids leading zeros on array indices
+	}
+	n := 0
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		d := int(c - '0')
+		if n > (maxInt-d)/10 {
+			return 0, false // would overflow int
+		}
+		n = n*10 + d
+	}
+	return n, true
+}
+
 // String returns the RFC 6901 string representation of p.
 func (p Pointer) String() string {
 	return string(p)
@@ -142,11 +170,8 @@ func (v Value) At(ptr Pointer) Value {
 			}
 			cur = next
 		case KindArray:
-			if len(tok) > 1 && tok[0] == '0' {
-				return OmittedValue() // RFC 6901 forbids leading zeros on array indices
-			}
-			idx, convErr := strconv.Atoi(tok)
-			if convErr != nil || idx < 0 || idx >= cur.Len() {
+			idx, ok := ParseArrayIndex(tok)
+			if !ok || idx >= cur.Len() {
 				return OmittedValue()
 			}
 			cur = cur.Index(idx)
