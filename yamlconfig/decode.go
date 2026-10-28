@@ -87,6 +87,9 @@ func tryCustomUnmarshaler(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Valu
 		}
 		d, err := time.ParseDuration(s)
 		if err != nil {
+			if isSensitiveNode(val, ptr) {
+				return true, validationErr(val, ptr, fmt.Sprintf("invalid duration value %s", ashlar.RedactedLiteral), nil)
+			}
 			return true, validationErr(val, ptr, fmt.Sprintf("invalid duration %q", s), nil)
 		}
 		dst.SetInt(int64(d))
