@@ -4,12 +4,35 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
+
+	"strings"
 
 	"github.com/mattjoyce/ashlar"
 	"github.com/mattjoyce/ashlar/jsoncontract"
 )
+
+// errUnmarshalSentinel is the sentinel error a custom unmarshaler wraps so a
+// caller can still reach the underlying unmarshaler error via errors.Is.
+var errUnmarshalSentinel = errors.New("unmarshal sentinel")
+
+// secretJSON fails with an error that quotes its input, mimicking an
+// UnmarshalJSON method that echoes a secret into its error text.
+type secretJSON string
+
+func (s *secretJSON) UnmarshalJSON(data []byte) error {
+	return fmt.Errorf("%w: bad input %s", errUnmarshalSentinel, data)
+}
+
+// secretText fails with an error that quotes its input, mimicking an
+// UnmarshalText method that echoes a secret into its error text.
+type secretText string
+
+func (s *secretText) UnmarshalText(data []byte) error {
+	return fmt.Errorf("%w: bad input %s", errUnmarshalSentinel, data)
+}
 
 // Blob is a named []byte type exercised by the byte-slice base64 case.
 type Blob []byte
@@ -224,4 +247,79 @@ func decodeStd(raw string, dst any) error {
 	dec.DisallowUnknownFields()
 	dec.UseNumber()
 	return dec.Decode(dst)
+}
+
+func TestDecodeStrictErrorsWithholdInput(t *testing.T) {
+	t.Parallel()
+
+	type customJSONStruct struct {
+		Token secretJSON `json:"token"`
+	}
+	type customTextStruct struct {
+		Token secretText `json:"token"`
+	}
+	type quotedBadInt struct {
+		Pin int `json:"pin,string"`
+	}
+	type overflowInt struct {
+		Pin int8 `json:"pin"`
+	}
+
+	rows := []struct {
+		desc   string
+		json   string
+		newDst func() any
+		leak   string
+		alsoIs error
+	}{
+		{
+			desc:   "custom UnmarshalJSON",
+			json:   `{"token":"tok-sekrit-1"}`,
+			newDst: func() any { return new(customJSONStruct) },
+			leak:   "tok-sekrit-1",
+			alsoIs: errUnmarshalSentinel,
+		},
+		{
+			desc:   "custom UnmarshalText",
+			json:   `{"token":"tok-sekrit-2"}`,
+			newDst: func() any { return new(customTextStruct) },
+			leak:   "tok-sekrit-2",
+			alsoIs: errUnmarshalSentinel,
+		},
+		{
+			desc:   "quoted bad content",
+			json:   `{"pin":"pin-sekrit-3"}`,
+			newDst: func() any { return new(quotedBadInt) },
+			leak:   "pin-sekrit-3",
+		},
+		{
+			desc:   "number overflow",
+			json:   `{"pin":123456789012}`,
+			newDst: func() any { return new(overflowInt) },
+			leak:   "123456789012",
+		},
+	}
+
+	for _, row := range rows {
+		row := row
+		t.Run(row.desc, func(t *testing.T) {
+			t.Parallel()
+			doc, err := jsoncontract.Read("contract.json", []byte(row.json))
+			if err != nil {
+				t.Fatalf("Read() unexpected error: %v", err)
+			}
+			err = doc.DecodeStrict(row.newDst())
+			if !errors.Is(err, ashlar.ErrValidation) {
+				t.Fatalf("DecodeStrict() error = %v, want ErrValidation", err)
+			}
+			if row.alsoIs != nil && !errors.Is(err, row.alsoIs) {
+				t.Errorf("errors.Is(err, sentinel) = false, want true: %v", err)
+			}
+			for _, format := range []string{"%v", "%+v", "%q"} {
+				if got := fmt.Sprintf(format, err); strings.Contains(got, row.leak) {
+					t.Errorf("format %q leaks %q: %s", format, row.leak, got)
+				}
+			}
+		})
+	}
 }

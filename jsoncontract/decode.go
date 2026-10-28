@@ -90,6 +90,15 @@ func confirmDecodeError(raw []byte, t reflect.Type) error {
 	return dec.Decode(reflect.New(t).Interface())
 }
 
+// withheldDecodeError wraps an error from encoding/json or a custom
+// unmarshaler. Its Error text never includes the wrapped message, which may
+// quote input values; errors.Is and errors.As still reach the original error.
+type withheldDecodeError struct{ err error }
+
+func (e withheldDecodeError) Error() string { return "decoder error withheld from diagnostics" }
+
+func (e withheldDecodeError) Unwrap() error { return e.err }
+
 func (d Document) classifyDecodeError(err error) error {
 	var typeErr *json.UnmarshalTypeError
 	if errors.As(err, &typeErr) {
@@ -99,8 +108,8 @@ func (d Document) classifyDecodeError(err error) error {
 			ashlar.ErrValidation,
 			ptr,
 			orig,
-			fmt.Sprintf("cannot unmarshal JSON %s into Go type %s", typeErr.Value, typeErr.Type),
-			err,
+			fmt.Sprintf("cannot unmarshal JSON %s into Go type %s", kindFromTypeValue(typeErr.Value), typeErr.Type),
+			withheldDecodeError{err},
 		)
 	}
 	msg := err.Error()
@@ -113,16 +122,27 @@ func (d Document) classifyDecodeError(err error) error {
 			ptr,
 			d.originAt(ptr),
 			fmt.Sprintf("unknown field %q", field),
-			err,
+			withheldDecodeError{err},
 		)
 	}
 	return ashlar.NewError(
 		ashlar.ErrValidation,
 		ashlar.RootPointer,
 		d.root.Provenance().Effective,
-		msg,
-		err,
+		"JSON value rejected by decoder",
+		withheldDecodeError{err},
 	)
+}
+
+// kindFromTypeValue returns the JSON kind word for a *json.UnmarshalTypeError
+// Value string: the first space-separated word ("number 123" → "number",
+// "string" → "string"), or "value" when Value is empty.
+func kindFromTypeValue(value string) string {
+	kind, _, _ := strings.Cut(value, " ")
+	if kind == "" {
+		return "value"
+	}
+	return kind
 }
 
 func (d Document) originAt(ptr ashlar.Pointer) ashlar.Origin {
