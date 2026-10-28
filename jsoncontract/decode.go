@@ -18,9 +18,21 @@ var (
 	jsonNumberType      = reflect.TypeFor[json.Number]()
 )
 
-// DecodeStrict decodes d into dst (which must be a non-nil pointer), rejecting
-// unknown struct fields with source-located ashlar.ErrUnknownField diagnostics
-// and reporting type mismatches as source-located ashlar.ErrValidation errors.
+// jsonField records the destination type and the ",string" tag option of one
+// struct field, as needed by the DecodeStrict pre-check.
+type jsonField struct {
+	typ    reflect.Type
+	quoted bool
+}
+
+// DecodeStrict decodes d into dst (which must be a non-nil pointer) with
+// encoding/json semantics (DisallowUnknownFields and UseNumber), plus one
+// restriction: object keys must match a field's JSON name exactly, where
+// encoding/json also accepts case-insensitive matches. Unknown or mismatched
+// keys fail with source-located ashlar.ErrUnknownField diagnostics. Inputs
+// encoding/json rejects fail with ashlar.ErrValidation, source-located where
+// the failing value can be identified. Value-type pre-checks only locate
+// errors: an input encoding/json accepts is never rejected for its type.
 func (d Document) DecodeStrict(dst any) error {
 	rv := reflect.ValueOf(dst)
 	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
@@ -42,8 +54,21 @@ func (d Document) DecodeStrict(dst any) error {
 		)
 	}
 
-	if err := checkKnownFields(d.root, ashlar.RootPointer, rv.Type().Elem()); err != nil {
+	elemType := rv.Type().Elem()
+
+	// First pass: reject unknown fields authoritatively, with no value-type
+	// checks.
+	if err := checkKnownFields(d.root, ashlar.RootPointer, elemType, false); err != nil {
 		return err
+	}
+	// Second pass: locate value-type errors. A located error is only
+	// authoritative when the same bytes also fail to decode with encoding/json
+	// under the same settings; otherwise the pre-check was wrong and is
+	// discarded.
+	if err := checkKnownFields(d.root, ashlar.RootPointer, elemType, true); err != nil {
+		if confirmDecodeError(d.raw, elemType) != nil {
+			return err
+		}
 	}
 
 	dec := json.NewDecoder(bytes.NewReader(d.raw))
@@ -53,6 +78,16 @@ func (d Document) DecodeStrict(dst any) error {
 		return d.classifyDecodeError(err)
 	}
 	return nil
+}
+
+// confirmDecodeError reports whether encoding/json (with DisallowUnknownFields
+// and UseNumber, the same settings DecodeStrict applies) rejects raw when
+// decoded into a fresh value of type t.
+func confirmDecodeError(raw []byte, t reflect.Type) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	dec.UseNumber()
+	return dec.Decode(reflect.New(t).Interface())
 }
 
 func (d Document) classifyDecodeError(err error) error {
@@ -104,7 +139,7 @@ func pointerFromDotField(field string) ashlar.Pointer {
 	return ashlar.NewPointer(strings.Split(field, ".")...)
 }
 
-func checkKnownFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error {
+func checkKnownFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type, types bool) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -116,30 +151,44 @@ func checkKnownFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) erro
 	case reflect.Interface:
 		return nil
 	case reflect.Struct:
-		return checkStructFields(val, ptr, t)
+		return checkStructFields(val, ptr, t, types)
 	case reflect.Slice, reflect.Array:
 		if val.Kind() != ashlar.KindArray {
+			// A []byte (but not [N]byte) also accepts a JSON string; the
+			// standard decoder validates the base64 content itself.
+			if types && t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 && val.Kind() == ashlar.KindString {
+				return nil
+			}
+			if !types {
+				return nil
+			}
 			return typeMismatchError(val, ptr, t)
 		}
 		elemType := t.Elem()
 		for i, elem := range val.Elements() {
-			if err := checkKnownFields(elem, ptr.Index(i), elemType); err != nil {
+			if err := checkKnownFields(elem, ptr.Index(i), elemType, types); err != nil {
 				return err
 			}
 		}
 		return nil
 	case reflect.Map:
 		if val.Kind() != ashlar.KindObject {
+			if !types {
+				return nil
+			}
 			return typeMismatchError(val, ptr, t)
 		}
 		elemType := t.Elem()
 		for _, m := range val.Members() {
-			if err := checkKnownFields(m.Value, ptr.Child(m.Key), elemType); err != nil {
+			if err := checkKnownFields(m.Value, ptr.Child(m.Key), elemType, types); err != nil {
 				return err
 			}
 		}
 		return nil
 	default:
+		if !types {
+			return nil
+		}
 		return checkScalarType(val, ptr, t)
 	}
 }
@@ -189,13 +238,16 @@ func typeMismatchError(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) err
 	)
 }
 
-func checkStructFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error {
+func checkStructFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type, types bool) error {
 	if val.Kind() != ashlar.KindObject {
+		if !types {
+			return nil
+		}
 		return typeMismatchError(val, ptr, t)
 	}
 	fields := collectStructJSONFields(t)
 	for _, m := range val.Members() {
-		fieldType, ok := fields[m.Key]
+		field, ok := fields[m.Key]
 		if !ok {
 			return ashlar.NewError(
 				ashlar.ErrUnknownField,
@@ -205,20 +257,26 @@ func checkStructFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) err
 				nil,
 			)
 		}
-		if err := checkKnownFields(m.Value, ptr.Child(m.Key), fieldType); err != nil {
+		// A field tagged with the ,string option accepts a JSON string (or
+		// null) without further value-type checks; the standard decoder
+		// validates the quoted literal.
+		if field.quoted && types && (m.Value.Kind() == ashlar.KindString || m.Value.IsNull()) {
+			continue
+		}
+		if err := checkKnownFields(m.Value, ptr.Child(m.Key), field.typ, types); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func collectStructJSONFields(t reflect.Type) map[string]reflect.Type {
-	out := make(map[string]reflect.Type)
+func collectStructJSONFields(t reflect.Type) map[string]jsonField {
+	out := make(map[string]jsonField)
 	collectStructJSONFieldsInto(t, out)
 	return out
 }
 
-func collectStructJSONFieldsInto(t reflect.Type, out map[string]reflect.Type) {
+func collectStructJSONFieldsInto(t reflect.Type, out map[string]jsonField) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -231,7 +289,7 @@ func collectStructJSONFieldsInto(t reflect.Type, out map[string]reflect.Type) {
 		if tag == "-" {
 			continue
 		}
-		name, _, _ := strings.Cut(tag, ",")
+		name, opts, _ := strings.Cut(tag, ",")
 		if sf.Anonymous && name == "" {
 			ft := sf.Type
 			for ft.Kind() == reflect.Pointer {
@@ -249,9 +307,38 @@ func collectStructJSONFieldsInto(t reflect.Type, out map[string]reflect.Type) {
 			name = sf.Name
 		}
 		if _, exists := out[name]; !exists {
-			out[name] = sf.Type
+			out[name] = jsonField{typ: sf.Type, quoted: jsonTagQuoted(sf.Type, opts)}
 		}
 	}
+}
+
+// jsonTagQuoted reports whether opts (the comma-separated json tag options
+// after the first comma) includes "string" and t is a type encoding/json
+// quotes: a bool, integer, unsigned integer, float, or string, either directly
+// or through one pointer level.
+func jsonTagQuoted(t reflect.Type, opts string) bool {
+	quoted := false
+	for _, opt := range strings.Split(opts, ",") {
+		if opt == "string" {
+			quoted = true
+			break
+		}
+	}
+	if !quoted {
+		return false
+	}
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64,
+		reflect.String:
+		return true
+	}
+	return false
 }
 
 func implementsCustomUnmarshaler(t reflect.Type) bool {
