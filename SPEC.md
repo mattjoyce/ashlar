@@ -279,7 +279,7 @@ const (
 
 // EnvBinding configures UPPER_SNAKE environment variable binding and optional ${VAR} scalar interpolation.
 type EnvBinding struct {
-	Prefix            string                      // Optional prefix (e.g., "ANAM" -> "ANAM_<UPPER_SNAKE_KEY>")
+	Prefix            string                      // Optional prefix (e.g., "APP" -> "APP_<UPPER_SNAKE_KEY>")
 	Lookup            func(string) (string, bool) // Defaults to os.LookupEnv
 	InterpolateScalar bool                        // Enable node-level ${VAR} expansion on string scalars
 }

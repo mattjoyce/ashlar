@@ -58,7 +58,7 @@ func TestSourceCoordinatesAndOrigin(t *testing.T) {
 	}{
 		{ashlar.DefaultOrigin("timeout"), "default:timeout"},
 		{ashlar.DefaultOrigin(""), "default"},
-		{ashlar.EnvOrigin("ANAM_TIMEOUT"), "env:ANAM_TIMEOUT"},
+		{ashlar.EnvOrigin("APP_TIMEOUT"), "env:APP_TIMEOUT"},
 		{ashlar.ExplicitOrigin("--server"), "explicit:--server"},
 	}
 	for _, tc := range origins {
