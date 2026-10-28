@@ -333,17 +333,20 @@ func (r Resolved) Files() []string
 func (r Resolved) SourceHash() (string, error)
 func (r Resolved) DecodeStrict(dst any) error
 func (r Resolved) Explain(ptr ashlar.Pointer) string
+func (r Resolved) ExplainAll() []ashlar.FieldProvenance
+func (r Resolved) FormatProvenanceReport() string
+func (r Resolved) Sanitize(useFingerprint bool) ashlar.Value
 ```
 
 ---
 
 ## 4. External Dependency Budget & Approval Accounting
 
-Per `AGENTS.md` §2, `go.mod` is initialized with **zero external dependencies**. External dependencies are proposed only for Rung `2.2` and Rung `3.1`:
+Per `AGENTS.md` §2, external dependencies are restricted to Rung `2.2` and Rung `3.1`:
 
-| Target Rung & Package | Proposed Direct Dependency | What Go `stdlib` Lacks | Transitive Cost (`go.mod`) | Status |
+| Target Rung & Package | Direct Dependency | What Go `stdlib` Lacks | Transitive Cost (`go.mod`) | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Rung 1 (`ashlar`)** | *None (stdlib only)* | — | 0 | Active |
 | **Rung 2.1 (`jsoncontract`)** | *None (stdlib only)* | Custom scanner/decoder over stdlib `encoding/json` + byte/line tracker enforces duplicate-key and trailing-token rejection with 0 external deps. | 0 | Active |
-| **Rung 2.2 (`schema`)** | `github.com/santhosh-tekuri/jsonschema/v6 v6.0.3` | Go stdlib has no JSON Schema Draft 2020-12 compiler/evaluator (`$defs`, `$ref`, `additionalProperties`, `patternProperties`, combinators). | 1 indirect (`golang.org/x/text`) | Requires approval before Rung 2.2 |
-| **Rung 3.1 (`yamlconfig`)** | `go.yaml.in/yaml/v3 v3.0.4` | Go stdlib has no YAML 1.2 lexer/parser (`yaml.Node` AST with line/column coordinates). | 0 indirect | Requires approval before Rung 3.1 |
+| **Rung 2.2 (`schema`)** | `github.com/santhosh-tekuri/jsonschema/v6 v6.0.3` | Go stdlib has no JSON Schema Draft 2020-12 compiler/evaluator (`$defs`, `$ref`, `additionalProperties`, `patternProperties`, combinators). | 1 indirect (`golang.org/x/text`) | Approved & Active |
+| **Rung 3.1 (`yamlconfig`)** | `go.yaml.in/yaml/v3 v3.0.4` | Go stdlib has no YAML 1.2 lexer/parser (`yaml.Node` AST with line/column coordinates). | 0 indirect | Approved & Active |

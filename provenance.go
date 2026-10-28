@@ -138,3 +138,131 @@ func cloneEntries(in []ProvenanceEntry) []ProvenanceEntry {
 	copy(out, in)
 	return out
 }
+
+// FieldProvenance describes the effective provenance and override history of a
+// single leaf field in a Value tree.
+type FieldProvenance struct {
+	Pointer     Pointer
+	Provenance  Provenance
+	Explanation string
+}
+
+// ExplainAll walks v in deterministic declaration order and returns the
+// provenance explanation for every leaf value (scalars, empty arrays, and empty
+// objects), honoring r (or DefaultRedactor when r is nil).
+func (v Value) ExplainAll(r Redactor) []FieldProvenance {
+	if r == nil {
+		r = DefaultRedactor()
+	}
+	if v.IsOmitted() {
+		return nil
+	}
+	var out []FieldProvenance
+	collectLeafProvenance(v, RootPointer, r, &out)
+	return out
+}
+
+// FormatProvenanceReport renders a multi-line provenance report ("<pointer>: <explanation>")
+// for all leaf values in v, honoring r (or DefaultRedactor when r is nil).
+func (v Value) FormatProvenanceReport(r Redactor) string {
+	entries := v.ExplainAll(r)
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, e := range entries {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		ptr := string(e.Pointer)
+		if ptr == "" {
+			ptr = "/"
+		}
+		fmt.Fprintf(&b, "%s: %s", ptr, e.Explanation)
+	}
+	return b.String()
+}
+
+func collectLeafProvenance(v Value, ptr Pointer, r Redactor, out *[]FieldProvenance) {
+	switch v.Kind() {
+	case KindObject:
+		members := v.Members()
+		if len(members) == 0 {
+			*out = append(*out, FieldProvenance{
+				Pointer:     ptr,
+				Provenance:  v.Provenance(),
+				Explanation: v.Explain(r, ptr),
+			})
+			return
+		}
+		for _, m := range members {
+			collectLeafProvenance(m.Value, ptr.Child(m.Key), r, out)
+		}
+	case KindArray:
+		elems := v.Elements()
+		if len(elems) == 0 {
+			*out = append(*out, FieldProvenance{
+				Pointer:     ptr,
+				Provenance:  v.Provenance(),
+				Explanation: v.Explain(r, ptr),
+			})
+			return
+		}
+		for i, el := range elems {
+			collectLeafProvenance(el, ptr.Index(i), r, out)
+		}
+	default:
+		*out = append(*out, FieldProvenance{
+			Pointer:     ptr,
+			Provenance:  v.Provenance(),
+			Explanation: v.Explain(r, ptr),
+		})
+	}
+}
+
+// Sanitize returns a copy of v where every sensitive scalar or subtree
+// identified by r (or DefaultRedactor when r is nil) is replaced with
+// RedactedLiteral (or a domain-separated SecretFingerprint when useFingerprint
+// is true).
+func (v Value) Sanitize(r Redactor, useFingerprint bool) Value {
+	if r == nil {
+		r = DefaultRedactor()
+	}
+	return sanitizeTree(v, RootPointer, false, r, useFingerprint)
+}
+
+func sanitizeTree(v Value, ptr Pointer, parentSensitive bool, r Redactor, useFingerprint bool) Value {
+	if v.IsOmitted() {
+		return v
+	}
+	sens := parentSensitive || v.Provenance().Sensitive || IsSensitivePath(r, ptr, ptr.LastToken())
+	switch v.Kind() {
+	case KindObject:
+		members := v.Members()
+		for i, m := range members {
+			keySens := sens || IsSensitivePath(r, ptr.Child(m.Key), m.Key)
+			members[i].Value = sanitizeTree(m.Value, ptr.Child(m.Key), keySens, r, useFingerprint)
+		}
+		obj, _ := ObjectValue(members, v.Provenance())
+		return obj
+	case KindArray:
+		elems := v.Elements()
+		for i, el := range elems {
+			elems[i] = sanitizeTree(el, ptr.Index(i), sens, r, useFingerprint)
+		}
+		return ArrayValue(elems, v.Provenance())
+	default:
+		if !sens {
+			return v
+		}
+		replacement := RedactedLiteral
+		if useFingerprint {
+			if s, ok := v.StringVal(); ok {
+				replacement = SecretFingerprint(string(ptr), s)
+			} else if lex, ok := v.NumberLexeme(); ok {
+				replacement = SecretFingerprint(string(ptr), lex)
+			}
+		}
+		return StringValue(replacement, NewProvenance(v.Provenance().Effective, true))
+	}
+}
