@@ -1,6 +1,6 @@
 # AGENTS.md — Ashlar Engineering Contract
 
-This document governs how code and specifications are written in **Ashlar**. It is binding for human and AI contributors alike and aligns Ashlar with the engineering standards of its primary consumers, **Anam** and **Ductile**.
+This document governs how code and specifications are written in **Ashlar**. It is binding for human and AI contributors alike.
 
 ---
 
@@ -11,7 +11,7 @@ Every design proposal, API boundary, and code review runs through **Hickey × Ar
 - **Hickey (Structure — Decomplect Concerns):**
   - **Simple, not merely easy.** Prefer fewer, orthogonal concepts over convenience affordances that braid independent concerns together.
   - **Distinguish value, state, and identity.** A parsed document, a schema, and a resolved configuration are immutable **values**. Provenance is part of the resolved value, not mutable side-channel state.
-  - **Unbraid mechanism from policy.** Ashlar owns document reading, structural validation plumbing, provenance tracking, and composition under declared rules. Consuming applications (Anam, Ductile) own their configuration types, schemas, domain semantics, secret stores, and canonical hashes.
+  - **Unbraid mechanism from policy.** Ashlar owns document reading, structural validation plumbing, provenance tracking, and composition under declared rules. Consuming applications own their configuration types, schemas, domain semantics, secret stores, and canonical hashes.
   - **Quarantine data contracts from runtime composition.** JSON contract/manifest reading and validation must remain usable without includes, merging, environment interpolation, or default insertion, and must never mutate raw bytes or number spellings.
 
 - **Armstrong (Runtime — Fail Fast, Fail Closed):**
@@ -26,7 +26,7 @@ Every design proposal, API boundary, and code review runs through **Hickey × Ar
 ### Dependencies
 - **Standard library first:** `testing`, `errors`, `fmt.Errorf(... %w ...)`, `io/fs`, `path/filepath`, `context`.
 - **Minimal external footprint:** Ashlar is a foundational library imported by applications with strict dependency budgets. Every direct dependency added to `go.mod` requires explicit human approval, a statement of what the standard library lacks, and an accounting of its transitive cost.
-- **No application coupling:** Ashlar must never import Anam or Ductile packages, database drivers, or specific vault/encryption backends. Secret decryption and file-integrity checks enter through narrow caller-supplied hooks.
+- **No application coupling:** Ashlar must never import consumer application packages, database drivers, or specific vault/encryption backends. Secret decryption and file-integrity checks enter through narrow caller-supplied hooks.
 
 ### Package & Code Structure
 - Group packages by concern, not by layer. Keep non-public implementation details in `internal/` where appropriate.

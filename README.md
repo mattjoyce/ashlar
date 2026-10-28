@@ -2,9 +2,9 @@
 
 An **ashlar** is a stone dressed and squared so it fits precisely with other stones in masonry.
 
-**Ashlar** is a Go library for strict document reading, structural schema validation, and traceable runtime configuration composition. It is designed first for **Ductile** and **Anam**, where configuration fragments, environment overrides, and explicit flags must compose predictably into a validated configuration whose effective values remain traceable to their sources.
+**Ashlar** is a Go library for strict document reading, structural schema validation, and traceable runtime configuration composition. Configuration fragments, environment overrides, and explicit flags compose predictably into a validated configuration whose effective values remain traceable to their sources.
 
-> **Status:** Specification and initial repository setup. See [`AGENTS.md`](AGENTS.md) for the engineering contract and coding standards.
+> **Status:** Specification and initial repository setup.
 
 ---
 
@@ -39,8 +39,6 @@ Ashlar deliberately refuses pieces that do not fit rather than silently reshapin
 ---
 
 ## Quality Gates
-
-Ashlar follows the Go quality bar shared with Anam and Ductile (see [`AGENTS.md`](AGENTS.md)):
 
 ```bash
 gofmt -l .
