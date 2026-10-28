@@ -191,6 +191,8 @@ func (v Value) Len() int
 func (v Value) Index(i int) Value
 func (v Value) Keys() []string
 func (v Value) Lookup(key string) (Value, bool)
+func (v Value) FreezeSensitivity(r Redactor) Value
+func (v Value) StampLayerOrigin(orig Origin, sensitive bool) Value
 ```
 
 ---
@@ -271,17 +273,18 @@ type IntegrityVerifier func(ctx context.Context, path string, raw []byte) error
 type MergeRule uint8
 
 const (
-	MergeReplace         MergeRule = iota // Later fragment replaces earlier value (recording Superseded)
+	MergeUnspecified     MergeRule = iota // Zero value; defaults to MergeMap for objects and MergeReplace for scalars/arrays
+	MergeReplace                          // Later fragment replaces earlier value (recording Superseded)
 	MergeMap                              // Deep-merge mapping keys recursively
 	MergeAppendSlice                      // Append sequence elements in include order
 	MergeForbidDuplicate                  // Reject if key/path is specified in more than one fragment
 )
 
-// EnvBinding configures UPPER_SNAKE environment variable binding and optional ${VAR} scalar interpolation.
+// EnvBinding configures UPPER_SNAKE environment variable binding and optional single-pass ${VAR} scalar interpolation.
 type EnvBinding struct {
 	Prefix            string                      // Optional prefix (e.g., "APP" -> "APP_<UPPER_SNAKE_KEY>")
 	Lookup            func(string) (string, bool) // Defaults to os.LookupEnv
-	InterpolateScalar bool                        // Enable node-level ${VAR} expansion on string scalars
+	InterpolateScalar bool                        // Enable single-pass node-level ${VAR} expansion on string scalars
 }
 
 // Candidate describes one configuration file search location for Discover.
@@ -323,9 +326,10 @@ func ParseDotEnv(source string, raw []byte) (map[string]string, error)
 // preserving the original input string in diagnostics.
 func ParseByteSize(raw string) (int64, error)
 
-// Resolved is an immutable, composed runtime configuration value with full provenance.
+// Resolved is an immutable, composed runtime configuration value with full provenance
+// and frozen node-level redaction sensitivity.
 type Resolved struct {
-	// Unexported root ashlar.Value, included file list, and Redactor.
+	// Unexported root ashlar.Value and included file list.
 }
 
 func (r Resolved) Root() ashlar.Value

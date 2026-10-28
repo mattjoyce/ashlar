@@ -119,3 +119,51 @@ func unescapeToken(s string) string {
 	s = strings.ReplaceAll(s, "~1", "/")
 	return strings.ReplaceAll(s, "~0", "~")
 }
+
+// At resolves an RFC 6901 JSON Pointer against v, returning OmittedValue() if
+// ptr is invalid or any token along the path does not exist. Any ancestor
+// container sensitivity is inherited by the returned Value.
+func (v Value) At(ptr Pointer) Value {
+	if ptr == RootPointer {
+		return v
+	}
+	tokens, err := ptr.Tokens()
+	if err != nil {
+		return OmittedValue()
+	}
+	cur := v
+	inheritedSens := cur.Provenance().Sensitive
+	for _, tok := range tokens {
+		switch cur.Kind() {
+		case KindObject:
+			next, ok := cur.Lookup(tok)
+			if !ok {
+				return OmittedValue()
+			}
+			cur = next
+		case KindArray:
+			if len(tok) > 1 && tok[0] == '0' {
+				return OmittedValue() // RFC 6901 forbids leading zeros on array indices
+			}
+			idx, convErr := strconv.Atoi(tok)
+			if convErr != nil || idx < 0 || idx >= cur.Len() {
+				return OmittedValue()
+			}
+			cur = cur.Index(idx)
+		default:
+			return OmittedValue()
+		}
+		if cur.Provenance().Sensitive {
+			inheritedSens = true
+		}
+	}
+	if inheritedSens && !cur.Provenance().Sensitive {
+		cur = cur.WithProvenance(cur.Provenance().WithSensitive(true))
+	}
+	return cur
+}
+
+// PresenceAt returns the Presence of the node at ptr (PresenceOmitted, PresenceNull, or PresencePresent).
+func (v Value) PresenceAt(ptr Pointer) Presence {
+	return v.At(ptr).Presence()
+}

@@ -130,7 +130,12 @@ func StringValue(s string, prov Provenance) Value {
 // ArrayValue constructs an immutable array Value, defensively copying elems.
 func ArrayValue(elems []Value, prov Provenance) Value {
 	copied := make([]Value, len(elems))
-	copy(copied, elems)
+	for i, el := range elems {
+		if prov.Sensitive && !el.IsOmitted() && !el.Provenance().Sensitive {
+			el = el.WithProvenance(el.Provenance().WithSensitive(true))
+		}
+		copied[i] = el
+	}
 	return Value{node: &valueNode{kind: KindArray, prov: prov, elems: copied}}
 }
 
@@ -151,6 +156,9 @@ func ObjectValue(members []Member, prov Provenance) (Value, error) {
 				orig = prov.Effective
 			}
 			return Value{}, NewError(ErrDuplicateKey, NewPointer(m.Key), orig, msg, nil)
+		}
+		if prov.Sensitive && !m.Value.IsOmitted() && !m.Value.Provenance().Sensitive {
+			m.Value = m.Value.WithProvenance(m.Value.Provenance().WithSensitive(true))
 		}
 		copied[i] = m
 		idx[m.Key] = i
@@ -194,10 +202,20 @@ func (v Value) Provenance() Provenance {
 	return v.node.prov
 }
 
-// WithProvenance returns a shallow copy of v with its Provenance set to prov.
+// WithProvenance returns a copy of v with its Provenance set to prov,
+// propagating Sensitivity to descendants when prov.Sensitive is true.
 func (v Value) WithProvenance(prov Provenance) Value {
 	if v.node == nil {
 		return Value{}
+	}
+	if prov.Sensitive {
+		switch v.Kind() {
+		case KindObject:
+			obj, _ := ObjectValue(v.Members(), prov)
+			return obj
+		case KindArray:
+			return ArrayValue(v.Elements(), prov)
+		}
 	}
 	cp := *v.node
 	cp.prov = prov
@@ -331,46 +349,6 @@ func (v Value) LookupMember(key string) (Member, bool) {
 		return Member{}, false
 	}
 	return v.node.members[idx], true
-}
-
-// At resolves an RFC 6901 JSON Pointer against v, returning OmittedValue() if
-// ptr is invalid or any token along the path does not exist.
-func (v Value) At(ptr Pointer) Value {
-	if ptr == RootPointer {
-		return v
-	}
-	tokens, err := ptr.Tokens()
-	if err != nil {
-		return OmittedValue()
-	}
-	cur := v
-	for _, tok := range tokens {
-		switch cur.Kind() {
-		case KindObject:
-			next, ok := cur.Lookup(tok)
-			if !ok {
-				return OmittedValue()
-			}
-			cur = next
-		case KindArray:
-			if len(tok) > 1 && tok[0] == '0' {
-				return OmittedValue() // RFC 6901 forbids leading zeros on array indices
-			}
-			idx, convErr := strconv.Atoi(tok)
-			if convErr != nil || idx < 0 || idx >= cur.Len() {
-				return OmittedValue()
-			}
-			cur = cur.Index(idx)
-		default:
-			return OmittedValue()
-		}
-	}
-	return cur
-}
-
-// PresenceAt returns the Presence of the node at ptr (PresenceOmitted, PresenceNull, or PresencePresent).
-func (v Value) PresenceAt(ptr Pointer) Presence {
-	return v.At(ptr).Presence()
 }
 
 // Summary formats a concise representation of v, replacing sensitive scalars with RedactedLiteral.

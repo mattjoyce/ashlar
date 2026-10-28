@@ -87,7 +87,7 @@ func tryCustomUnmarshaler(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Valu
 		}
 		d, err := time.ParseDuration(s)
 		if err != nil {
-			return true, validationErr(val, ptr, fmt.Sprintf("invalid duration %q", s), err)
+			return true, validationErr(val, ptr, fmt.Sprintf("invalid duration %q", s), nil)
 		}
 		dst.SetInt(int64(d))
 		return true, nil
@@ -101,6 +101,9 @@ func tryCustomUnmarshaler(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Valu
 			}
 			u := addr.Interface().(encoding.TextUnmarshaler)
 			if err := u.UnmarshalText([]byte(s)); err != nil {
+				if isSensitiveNode(val, ptr) {
+					return true, validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
+				}
 				return true, validationErr(val, ptr, err.Error(), err)
 			}
 			return true, nil
@@ -108,10 +111,16 @@ func tryCustomUnmarshaler(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Valu
 		if addr.Type().Implements(jsonUnmarshalerType) {
 			raw, err := json.Marshal(valueToGoAny(val))
 			if err != nil {
+				if isSensitiveNode(val, ptr) {
+					return true, validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
+				}
 				return true, validationErr(val, ptr, err.Error(), err)
 			}
 			u := addr.Interface().(json.Unmarshaler)
 			if err := u.UnmarshalJSON(raw); err != nil {
+				if isSensitiveNode(val, ptr) {
+					return true, validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
+				}
 				return true, validationErr(val, ptr, err.Error(), err)
 			}
 			return true, nil
@@ -198,21 +207,21 @@ func decodeScalar(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		i, err := val.Int64()
 		if err != nil || dst.OverflowInt(i) {
-			return validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), err)
+			return validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
 		}
 		dst.SetInt(i)
 		return nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		u, err := val.Uint64()
 		if err != nil || dst.OverflowUint(u) {
-			return validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), err)
+			return validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
 		}
 		dst.SetUint(u)
 		return nil
 	case reflect.Float32, reflect.Float64:
 		f, err := val.Float64()
 		if err != nil || dst.OverflowFloat(f) {
-			return validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), err)
+			return validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
 		}
 		dst.SetFloat(f)
 		return nil
@@ -326,6 +335,25 @@ func valueToGoAny(val ashlar.Value) any {
 	}
 }
 
+func isSensitiveNode(val ashlar.Value, ptr ashlar.Pointer) bool {
+	return val.Provenance().Sensitive || ashlar.IsSensitivePath(nil, ptr, ptr.LastToken())
+}
+
 func validationErr(val ashlar.Value, ptr ashlar.Pointer, msg string, cause error) error {
-	return ashlar.NewError(ashlar.ErrValidation, ptr, val.Provenance().Effective, msg, cause)
+	rawScalar := ""
+	if s, ok := val.StringVal(); ok {
+		rawScalar = s
+	} else if n, ok := val.NumberLexeme(); ok {
+		rawScalar = string(n)
+	}
+	return ashlar.NewRedactedError(
+		ashlar.ErrValidation,
+		ptr,
+		val.Provenance().Effective,
+		msg,
+		cause,
+		nil,
+		rawScalar,
+		val.Provenance().Sensitive,
+	)
 }

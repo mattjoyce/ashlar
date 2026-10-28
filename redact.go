@@ -57,21 +57,45 @@ func DefaultRedactor() Redactor {
 }
 
 // NewKeyRedactor constructs a Redactor that matches the target field key (or the
-// leaf key of ptr when key is empty) against secretSubstrings (after lowercasing
-// and normalizing '-' to '_'), unless the normalized key ends with one of safeSuffixes.
-func NewKeyRedactor(secretSubstrings, safeSuffixes []string) Redactor {
-	patterns := normalizeList(secretSubstrings)
-	safe := normalizeList(safeSuffixes)
-	return RedactorFunc(func(ptr Pointer, key string) bool {
-		target := key
-		if target == "" {
-			target = leafKey(ptr)
-		}
-		if target == "" {
+type keyRedactor struct {
+	patterns []string
+	safe     []string
+}
+
+func (kr keyRedactor) IsSensitive(ptr Pointer, key string) bool {
+	target := key
+	if target == "" || isDigitsOnly(target) {
+		target = leafKey(ptr)
+	}
+	if target != "" {
+		if hasSafeSuffix(target, kr.safe) {
 			return false
 		}
-		return matchesKeyPolicy(target, patterns, safe)
-	})
+		if matchesKeyPolicy(target, kr.patterns, kr.safe) {
+			return true
+		}
+	}
+	tokens, err := ptr.Tokens()
+	if err != nil {
+		return false
+	}
+	for _, tok := range tokens {
+		if !isDigitsOnly(tok) && matchesKeyPolicy(tok, kr.patterns, kr.safe) {
+			return true
+		}
+	}
+	return false
+}
+
+// NewKeyRedactor constructs a Redactor that matches key or any non-numeric
+// ancestor token of ptr against secretSubstrings (after lowercasing and
+// normalizing '-' to '_'), unless the normalized leaf key ends with one of
+// safeSuffixes.
+func NewKeyRedactor(secretSubstrings, safeSuffixes []string) Redactor {
+	return keyRedactor{
+		patterns: normalizeList(secretSubstrings),
+		safe:     normalizeList(safeSuffixes),
+	}
 }
 
 func leafKey(ptr Pointer) string {
@@ -113,12 +137,28 @@ func CombineRedactors(redactors ...Redactor) Redactor {
 }
 
 // IsSensitivePath checks whether r (or DefaultRedactor when r is nil) classifies
-// ptr or key as sensitive.
+// ptr, key, or any ancestor prefix of ptr as sensitive.
 func IsSensitivePath(r Redactor, ptr Pointer, key string) bool {
 	if r == nil {
 		r = DefaultRedactor()
 	}
-	return r.IsSensitive(ptr, key)
+	if r.IsSensitive(ptr, key) {
+		return true
+	}
+	if _, isKeyPol := r.(keyRedactor); isKeyPol {
+		return false
+	}
+	tokens, err := ptr.Tokens()
+	if err != nil || len(tokens) == 0 {
+		return false
+	}
+	for i := len(tokens); i >= 1; i-- {
+		ancPtr := NewPointer(tokens[:i]...)
+		if r.IsSensitive(ancPtr, tokens[i-1]) {
+			return true
+		}
+	}
+	return false
 }
 
 // RedactString returns RedactedLiteral when sensitive is true, and value otherwise.
@@ -129,12 +169,17 @@ func RedactString(value string, sensitive bool) string {
 	return value
 }
 
-// ScrubSecret replaces every non-empty occurrence of secret in text with RedactedLiteral.
+// ScrubSecret replaces every non-empty occurrence of secret (and its trimmed
+// form when whitespace-padded) in text with RedactedLiteral.
 func ScrubSecret(text, secret string) string {
 	if secret == "" || text == "" {
 		return text
 	}
-	return strings.ReplaceAll(text, secret, RedactedLiteral)
+	out := strings.ReplaceAll(text, secret, RedactedLiteral)
+	if trimmed := strings.TrimSpace(secret); trimmed != "" && trimmed != secret {
+		out = strings.ReplaceAll(out, trimmed, RedactedLiteral)
+	}
+	return out
 }
 
 // SecretFingerprint computes a non-reversible, domain-separated SHA-256 digest
@@ -160,15 +205,23 @@ func normalizeKey(key string) string {
 	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"))
 }
 
-func matchesKeyPolicy(key string, patterns, safeSuffixes []string) bool {
+func hasSafeSuffix(key string, safeSuffixes []string) bool {
 	norm := normalizeKey(key)
 	if norm == "" {
 		return false
 	}
 	for _, suffix := range safeSuffixes {
 		if strings.HasSuffix(norm, suffix) {
-			return false
+			return true
 		}
+	}
+	return false
+}
+
+func matchesKeyPolicy(key string, patterns, safeSuffixes []string) bool {
+	norm := normalizeKey(key)
+	if norm == "" || hasSafeSuffix(norm, safeSuffixes) {
+		return false
 	}
 	for _, p := range patterns {
 		if norm == p || strings.Contains(norm, p) {

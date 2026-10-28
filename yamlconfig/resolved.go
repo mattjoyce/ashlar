@@ -9,12 +9,12 @@ import (
 )
 
 // Resolved is an immutable, composed runtime configuration value with full
-// per-node provenance and deterministic multi-file source hashing.
+// per-node provenance, frozen secret-sensitivity classification, and
+// deterministic multi-file source hashing.
 type Resolved struct {
 	root       ashlar.Value
 	files      []string
 	sourceHash string
-	redactor   ashlar.Redactor
 }
 
 // Root returns the immutable root ashlar.Value of r.
@@ -45,28 +45,28 @@ func (r Resolved) DecodeStrict(dst any) error {
 }
 
 // Explain formats a human-readable provenance summary for the value at ptr,
-// honoring secret redaction.
+// honoring the sensitivity frozen at resolution time.
 func (r Resolved) Explain(ptr ashlar.Pointer) string {
-	return r.root.At(ptr).Explain(r.redactor, ptr)
+	return r.root.At(ptr).Explain(nil, ptr)
 }
 
 // ExplainAll returns the provenance explanation for every leaf field in r in
-// deterministic declaration order, honoring secret redaction.
+// deterministic declaration order, honoring frozen secret redaction.
 func (r Resolved) ExplainAll() []ashlar.FieldProvenance {
-	return r.root.ExplainAll(r.redactor)
+	return r.root.ExplainAll(nil)
 }
 
 // FormatProvenanceReport renders a multi-line provenance report for every leaf
-// field in r, honoring secret redaction.
+// field in r, honoring frozen secret redaction.
 func (r Resolved) FormatProvenanceReport() string {
-	return r.root.FormatProvenanceReport(r.redactor)
+	return r.root.FormatProvenanceReport(nil)
 }
 
 // Sanitize returns a copy of r.Root() where every sensitive scalar or subtree
 // is replaced with ashlar.RedactedLiteral (or a domain-separated
 // ashlar.SecretFingerprint when useFingerprint is true).
 func (r Resolved) Sanitize(useFingerprint bool) ashlar.Value {
-	return r.root.Sanitize(r.redactor, useFingerprint)
+	return r.root.Sanitize(nil, useFingerprint)
 }
 
 func computeFragmentsHash(fragments []Fragment) ([]string, string) {

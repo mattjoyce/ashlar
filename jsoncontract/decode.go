@@ -15,6 +15,7 @@ import (
 var (
 	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
 	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+	jsonNumberType      = reflect.TypeFor[json.Number]()
 )
 
 // DecodeStrict decodes d into dst (which must be a non-nil pointer), rejecting
@@ -112,11 +113,13 @@ func checkKnownFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) erro
 	}
 
 	switch t.Kind() {
+	case reflect.Interface:
+		return nil
 	case reflect.Struct:
 		return checkStructFields(val, ptr, t)
 	case reflect.Slice, reflect.Array:
 		if val.Kind() != ashlar.KindArray {
-			return nil
+			return typeMismatchError(val, ptr, t)
 		}
 		elemType := t.Elem()
 		for i, elem := range val.Elements() {
@@ -124,9 +127,10 @@ func checkKnownFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) erro
 				return err
 			}
 		}
+		return nil
 	case reflect.Map:
 		if val.Kind() != ashlar.KindObject {
-			return nil
+			return typeMismatchError(val, ptr, t)
 		}
 		elemType := t.Elem()
 		for _, m := range val.Members() {
@@ -134,13 +138,60 @@ func checkKnownFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) erro
 				return err
 			}
 		}
+		return nil
+	default:
+		return checkScalarType(val, ptr, t)
+	}
+}
+
+func checkScalarType(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error {
+	if t == jsonNumberType {
+		if val.Kind() != ashlar.KindNumber && val.Kind() != ashlar.KindString {
+			return typeMismatchError(val, ptr, t)
+		}
+		return nil
+	}
+	switch t.Kind() {
+	case reflect.String:
+		if val.Kind() != ashlar.KindString {
+			return typeMismatchError(val, ptr, t)
+		}
+	case reflect.Bool:
+		if val.Kind() != ashlar.KindBool {
+			return typeMismatchError(val, ptr, t)
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		i, err := val.Int64()
+		if err != nil || reflect.Zero(t).OverflowInt(i) {
+			return typeMismatchError(val, ptr, t)
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		u, err := val.Uint64()
+		if err != nil || reflect.Zero(t).OverflowUint(u) {
+			return typeMismatchError(val, ptr, t)
+		}
+	case reflect.Float32, reflect.Float64:
+		f, err := val.Float64()
+		if err != nil || reflect.Zero(t).OverflowFloat(f) {
+			return typeMismatchError(val, ptr, t)
+		}
 	}
 	return nil
 }
 
+func typeMismatchError(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error {
+	return ashlar.NewError(
+		ashlar.ErrValidation,
+		ptr,
+		val.Provenance().Effective,
+		fmt.Sprintf("cannot unmarshal JSON %s into Go type %s", val.Kind(), t),
+		nil,
+	)
+}
+
 func checkStructFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error {
 	if val.Kind() != ashlar.KindObject {
-		return nil
+		return typeMismatchError(val, ptr, t)
 	}
 	fields := collectStructJSONFields(t)
 	for _, m := range val.Members() {

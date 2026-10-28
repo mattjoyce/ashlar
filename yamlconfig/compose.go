@@ -12,9 +12,12 @@ import (
 type MergeRule uint8
 
 const (
+	// MergeUnspecified indicates no explicit MergeRule was configured; objects
+	// default to MergeMap and sequences/scalars default to MergeReplace.
+	MergeUnspecified MergeRule = iota
 	// MergeReplace replaces the earlier value with the later fragment's value,
 	// recording the superseded value and its Origin in Provenance.
-	MergeReplace MergeRule = iota
+	MergeReplace
 	// MergeMap recursively deep-merges mapping keys across fragments.
 	MergeMap
 	// MergeAppendSlice appends sequence elements in fragment order.
@@ -27,6 +30,8 @@ const (
 // String returns a human-readable name for r.
 func (r MergeRule) String() string {
 	switch r {
+	case MergeUnspecified:
+		return "unspecified"
 	case MergeReplace:
 		return "replace"
 	case MergeMap:
@@ -41,10 +46,16 @@ func (r MergeRule) String() string {
 }
 
 // PatternMergeRule associates a pointer pattern (supporting "*" as a single-token
-// wildcard, e.g. "/plugins/*") with a MergeRule.
+// wildcard and "~*" for a literal "*" token, e.g. "/plugins/*" or "/a~1b/*")
+// with a MergeRule.
 type PatternMergeRule struct {
 	Pattern string
 	Rule    MergeRule
+}
+
+type patternToken struct {
+	literal  string
+	wildcard bool
 }
 
 // CompositionPolicy declares the structural and per-path composition rules used
@@ -78,42 +89,122 @@ func (p CompositionPolicy) redactor() ashlar.Redactor {
 	return ashlar.DefaultRedactor()
 }
 
+func (p CompositionPolicy) validate() error {
+	for ptr := range p.Rules {
+		if !ptr.Valid() {
+			return ashlar.NewError(
+				ashlar.ErrComposition,
+				ashlar.RootPointer,
+				ashlar.Origin{},
+				fmt.Sprintf("invalid pointer %q in CompositionPolicy.Rules", ptr),
+				ashlar.ErrPointer,
+			)
+		}
+	}
+	for _, pr := range p.PatternRules {
+		if _, err := parsePatternTokens(pr.Pattern); err != nil {
+			return ashlar.NewError(
+				ashlar.ErrComposition,
+				ashlar.RootPointer,
+				ashlar.Origin{},
+				fmt.Sprintf("invalid pattern %q in CompositionPolicy.PatternRules", pr.Pattern),
+				err,
+			)
+		}
+	}
+	return nil
+}
+
 func (p CompositionPolicy) ruleFor(ptr ashlar.Pointer, kind ashlar.Kind) MergeRule {
-	if r, ok := p.Rules[ptr]; ok {
+	if r, ok := p.Rules[ptr]; ok && r != MergeUnspecified {
 		return r
 	}
 	for _, pr := range p.PatternRules {
-		if matchPointerPattern(pr.Pattern, ptr) {
+		if pr.Rule != MergeUnspecified && matchPointerPattern(pr.Pattern, ptr) {
 			return pr.Rule
 		}
 	}
 	switch kind {
 	case ashlar.KindObject:
-		return p.ObjectRule
+		if p.ObjectRule != MergeUnspecified {
+			return p.ObjectRule
+		}
+		return MergeMap
 	case ashlar.KindArray:
-		return p.ArrayRule
+		if p.ArrayRule != MergeUnspecified {
+			return p.ArrayRule
+		}
+		return MergeReplace
 	default:
-		return p.ScalarRule
+		if p.ScalarRule != MergeUnspecified {
+			return p.ScalarRule
+		}
+		return MergeReplace
 	}
 }
 
-func matchPointerPattern(pattern string, ptr ashlar.Pointer) bool {
-	if pattern == string(ptr) {
-		return true
+func parsePatternTokens(pattern string) ([]patternToken, error) {
+	if pattern == "" {
+		return nil, nil
 	}
-	if !strings.HasPrefix(pattern, "/") || ptr == ashlar.RootPointer {
-		return false
+	if pattern[0] != '/' {
+		return nil, fmt.Errorf("%w: pattern %q must be empty or start with '/'", ashlar.ErrPointer, pattern)
 	}
-	patParts := strings.Split(pattern[1:], "/")
-	ptrTokens, err := ptr.Tokens()
-	if err != nil || len(patParts) != len(ptrTokens) {
-		return false
-	}
-	for i, part := range patParts {
+	rawParts := strings.Split(pattern[1:], "/")
+	out := make([]patternToken, len(rawParts))
+	for i, part := range rawParts {
 		if part == "*" {
+			out[i] = patternToken{wildcard: true}
 			continue
 		}
-		if part != ptrTokens[i] {
+		decoded, err := decodePatternSegment(part)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = patternToken{literal: decoded}
+	}
+	return out, nil
+}
+
+func decodePatternSegment(part string) (string, error) {
+	var b strings.Builder
+	for i := 0; i < len(part); i++ {
+		if part[i] != '~' {
+			b.WriteByte(part[i])
+			continue
+		}
+		if i+1 >= len(part) {
+			return "", fmt.Errorf("%w: trailing '~' in pattern segment %q", ashlar.ErrPointer, part)
+		}
+		switch part[i+1] {
+		case '0':
+			b.WriteByte('~')
+		case '1':
+			b.WriteByte('/')
+		case '*':
+			b.WriteByte('*')
+		default:
+			return "", fmt.Errorf("%w: invalid escape '~%c' in pattern segment %q", ashlar.ErrPointer, part[i+1], part)
+		}
+		i++
+	}
+	return b.String(), nil
+}
+
+func matchPointerPattern(pattern string, ptr ashlar.Pointer) bool {
+	patTokens, err := parsePatternTokens(pattern)
+	if err != nil {
+		return false
+	}
+	ptrTokens, err := ptr.Tokens()
+	if err != nil || len(patTokens) != len(ptrTokens) {
+		return false
+	}
+	for i, pt := range patTokens {
+		if pt.wildcard {
+			continue
+		}
+		if pt.literal != ptrTokens[i] {
 			return false
 		}
 	}
@@ -124,6 +215,9 @@ func matchPointerPattern(pattern string, ptr ashlar.Pointer) bool {
 // It is all-or-nothing: any conflict returns an empty Value and a source-located
 // *ashlar.Error wrapping ashlar.ErrComposition.
 func ComposeFragments(policy CompositionPolicy, fragments []Fragment) (ashlar.Value, error) {
+	if err := policy.validate(); err != nil {
+		return ashlar.Value{}, err
+	}
 	if len(fragments) == 0 {
 		return ashlar.OmittedValue(), nil
 	}
@@ -137,6 +231,9 @@ func ComposeFragments(policy CompositionPolicy, fragments []Fragment) (ashlar.Va
 // ComposeValues merges values in order under policy, extending provenance
 // chains on every overridden or merged node.
 func ComposeValues(policy CompositionPolicy, values ...ashlar.Value) (ashlar.Value, error) {
+	if err := policy.validate(); err != nil {
+		return ashlar.Value{}, err
+	}
 	var acc ashlar.Value
 	for _, v := range values {
 		if v.IsOmitted() {

@@ -4,37 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"os"
-	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/mattjoyce/ashlar"
 )
-
-var reEnvInterpolate = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
-
-// EnvBinding configures UPPER_SNAKE environment variable binding and optional
-// ${VAR} scalar interpolation during configuration resolution.
-type EnvBinding struct {
-	// Prefix is an optional UPPER_SNAKE prefix (e.g., "APP" -> "APP_SERVICE_PORT").
-	Prefix string
-	// Bindings maps RFC 6901 Pointers to explicit environment variable names.
-	Bindings map[ashlar.Pointer]string
-	// Lookup resolves an environment variable by name (defaults to os.LookupEnv).
-	Lookup func(string) (string, bool)
-	// InterpolateScalar enables ${VAR} expansion on string scalars, failing
-	// closed with ashlar.ErrUnresolved when a referenced variable is unset.
-	InterpolateScalar bool
-}
-
-func (e EnvBinding) lookup(key string) (string, bool) {
-	if e.Lookup != nil {
-		return e.Lookup(key)
-	}
-	return os.LookupEnv(key)
-}
 
 // Override binds an RFC 6901 Pointer to a single scalar or container Value at a
 // declared precedence layer (default or explicit override).
@@ -43,22 +17,24 @@ type Override struct {
 	Value   ashlar.Value
 }
 
-// DefaultSetting constructs an Override at ptr with ashlar.DefaultOrigin(label).
+// DefaultSetting constructs an Override at ptr with ashlar.DefaultOrigin(label)
+// recursively stamped onto val and all descendant nodes.
 func DefaultSetting(ptr ashlar.Pointer, label string, val ashlar.Value) Override {
 	if label == "" {
 		label = ptr.LastToken()
 	}
-	prov := ashlar.NewProvenance(ashlar.DefaultOrigin(label), val.Provenance().Sensitive)
-	return Override{Pointer: ptr, Value: val.WithProvenance(prov)}
+	orig := ashlar.DefaultOrigin(label)
+	return Override{Pointer: ptr, Value: val.StampLayerOrigin(orig, val.Provenance().Sensitive)}
 }
 
-// ExplicitSetting constructs an Override at ptr with ashlar.ExplicitOrigin(label).
+// ExplicitSetting constructs an Override at ptr with ashlar.ExplicitOrigin(label)
+// recursively stamped onto val and all descendant nodes.
 func ExplicitSetting(ptr ashlar.Pointer, label string, val ashlar.Value) Override {
 	if label == "" {
 		label = string(ptr)
 	}
-	prov := ashlar.NewProvenance(ashlar.ExplicitOrigin(label), val.Provenance().Sensitive)
-	return Override{Pointer: ptr, Value: val.WithProvenance(prov)}
+	orig := ashlar.ExplicitOrigin(label)
+	return Override{Pointer: ptr, Value: val.StampLayerOrigin(orig, val.Provenance().Sensitive)}
 }
 
 // ResolveOptions configures the end-to-end runtime configuration resolution
@@ -91,6 +67,9 @@ func ResolveFragments(ctx context.Context, fragments []Fragment, opts ResolveOpt
 		return Resolved{}, ashlar.NewError(ashlar.ErrComposition, ashlar.RootPointer, ashlar.Origin{}, "context canceled", err)
 	}
 	policy := normalizePolicy(opts.Policy)
+	if err := policy.validate(); err != nil {
+		return Resolved{}, err
+	}
 	red := policy.redactor()
 
 	acc, err := applyOverrides(policy, ashlar.OmittedValue(), opts.Defaults)
@@ -126,6 +105,8 @@ func ResolveFragments(ctx context.Context, fragments []Fragment, opts ResolveOpt
 		}
 	}
 
+	acc = acc.FreezeSensitivity(red)
+
 	if err := verifyRequiredPointers(acc, opts.Required); err != nil {
 		return Resolved{}, err
 	}
@@ -135,14 +116,10 @@ func ResolveFragments(ctx context.Context, fragments []Fragment, opts ResolveOpt
 		root:       acc,
 		files:      files,
 		sourceHash: sum,
-		redactor:   red,
 	}, nil
 }
 
 func normalizePolicy(p CompositionPolicy) CompositionPolicy {
-	if p.Rules == nil && len(p.PatternRules) == 0 && p.ObjectRule == MergeReplace {
-		p.ObjectRule = MergeMap
-	}
 	if p.Redactor == nil {
 		p.Redactor = ashlar.DefaultRedactor()
 	}
@@ -152,11 +129,21 @@ func normalizePolicy(p CompositionPolicy) CompositionPolicy {
 func applyOverrides(policy CompositionPolicy, base ashlar.Value, overrides []Override) (ashlar.Value, error) {
 	acc := base
 	for _, ov := range overrides {
-		tree, err := buildPointerTree(ov.Pointer, ov.Value)
+		tokens, err := ov.Pointer.Tokens()
 		if err != nil {
-			return ashlar.Value{}, err
+			return ashlar.Value{}, ashlar.NewError(
+				ashlar.ErrSyntax,
+				ov.Pointer,
+				ov.Value.Provenance().Effective,
+				"invalid override pointer",
+				err,
+			)
 		}
-		acc, err = ComposeValues(policy, acc, tree)
+		stamped := ov.Value
+		if orig := stamped.Provenance().Effective; orig.Valid() {
+			stamped = stamped.StampLayerOrigin(orig, stamped.Provenance().Sensitive)
+		}
+		acc, err = applyOverrideAt(policy, acc, ashlar.RootPointer, tokens, stamped)
 		if err != nil {
 			return ashlar.Value{}, err
 		}
@@ -164,209 +151,127 @@ func applyOverrides(policy CompositionPolicy, base ashlar.Value, overrides []Ove
 	return acc, nil
 }
 
-func buildPointerTree(ptr ashlar.Pointer, leaf ashlar.Value) (ashlar.Value, error) {
-	tokens, err := ptr.Tokens()
-	if err != nil {
-		return ashlar.Value{}, ashlar.NewError(ashlar.ErrSyntax, ptr, leaf.Provenance().Effective, "invalid pointer", err)
-	}
-	cur := leaf
-	for i := len(tokens) - 1; i >= 0; i-- {
-		tok := tokens[i]
-		obj, err := ashlar.ObjectValue([]ashlar.Member{{
-			Key:       tok,
-			KeyOrigin: leaf.Provenance().Effective,
-			Value:     cur,
-		}}, leaf.Provenance())
-		if err != nil {
-			return ashlar.Value{}, err
-		}
-		cur = obj
-	}
-	return cur, nil
-}
-
-func applyEnvLayer(root ashlar.Value, policy CompositionPolicy, env EnvBinding) (ashlar.Value, error) {
-	cur := root
-	if env.InterpolateScalar && cur.IsPresent() {
-		interpolated, err := interpolateTreeScalars(cur, ashlar.RootPointer, env, policy.redactor())
-		if err != nil {
-			return ashlar.Value{}, err
-		}
-		cur = interpolated
-	}
-
-	bindings := collectEnvBindings(cur, env)
-	keys := make([]string, 0, len(bindings))
-	for p := range bindings {
-		keys = append(keys, string(p))
-	}
-	sort.Strings(keys)
-
-	var envOverrides []Override
-	for _, rawPtr := range keys {
-		ptr := ashlar.Pointer(rawPtr)
-		envName := bindings[ptr]
-		rawVal, ok := env.lookup(envName)
-		if !ok {
-			continue
-		}
-		existing := cur.At(ptr)
-		sensitive := policy.redactor().IsSensitive(ptr, ptr.LastToken()) || policy.redactor().IsSensitive(ptr, envName)
-		prov := ashlar.NewProvenance(ashlar.EnvOrigin(envName), sensitive)
-		parsed, err := coerceEnvScalar(rawVal, existing.Kind(), prov, ptr)
-		if err != nil {
-			return ashlar.Value{}, err
-		}
-		envOverrides = append(envOverrides, Override{Pointer: ptr, Value: parsed})
-	}
-	return applyOverrides(policy, cur, envOverrides)
-}
-
-func interpolateTreeScalars(
-	val ashlar.Value,
+func applyOverrideAt(
+	policy CompositionPolicy,
+	cur ashlar.Value,
 	ptr ashlar.Pointer,
-	env EnvBinding,
-	red ashlar.Redactor,
+	tokens []string,
+	leaf ashlar.Value,
 ) (ashlar.Value, error) {
-	switch val.Kind() {
-	case ashlar.KindString:
-		s, _ := val.StringVal()
-		if !strings.Contains(s, "${") {
-			return val, nil
+	if len(tokens) == 0 {
+		if cur.IsOmitted() {
+			return leaf, nil
 		}
-		return interpolateSingleString(val, ptr, s, env, red)
+		return composeNode(policy, ptr, cur, leaf)
+	}
+
+	head := tokens[0]
+	rest := tokens[1:]
+	childPtr := ptr.Child(head)
+
+	switch cur.Kind() {
+	case ashlar.KindArray:
+		return applyOverrideInArray(policy, cur, ptr, head, rest, leaf)
 	case ashlar.KindObject:
-		members := val.Members()
-		for i, m := range members {
-			updated, err := interpolateTreeScalars(m.Value, ptr.Child(m.Key), env, red)
+		return applyOverrideInObject(policy, cur, childPtr, head, rest, leaf)
+	case ashlar.KindInvalid:
+		child, err := applyOverrideAt(policy, ashlar.OmittedValue(), childPtr, rest, leaf)
+		if err != nil {
+			return ashlar.Value{}, err
+		}
+		return ashlar.ObjectValue([]ashlar.Member{{
+			Key:       head,
+			KeyOrigin: leaf.Provenance().Effective,
+			Value:     child,
+		}}, leaf.Provenance())
+	default:
+		return ashlar.Value{}, ashlar.NewError(
+			ashlar.ErrComposition,
+			childPtr,
+			leaf.Provenance().Effective,
+			fmt.Sprintf("cannot traverse %q beneath scalar %s at %q", head, cur.Kind(), ptrOrRoot(ptr)),
+			nil,
+		)
+	}
+}
+
+func applyOverrideInArray(
+	policy CompositionPolicy,
+	cur ashlar.Value,
+	ptr ashlar.Pointer,
+	head string,
+	rest []string,
+	leaf ashlar.Value,
+) (ashlar.Value, error) {
+	if len(head) > 1 && head[0] == '0' {
+		return ashlar.Value{}, ashlar.NewError(
+			ashlar.ErrComposition,
+			ptr.Child(head),
+			leaf.Provenance().Effective,
+			fmt.Sprintf("invalid leading zero in array index %q at %q", head, ptrOrRoot(ptr)),
+			nil,
+		)
+	}
+	idx, err := strconv.Atoi(head)
+	if err != nil || idx < 0 {
+		return ashlar.Value{}, ashlar.NewError(
+			ashlar.ErrComposition,
+			ptr.Child(head),
+			leaf.Provenance().Effective,
+			fmt.Sprintf("cannot index array at %q with non-integer token %q", ptrOrRoot(ptr), head),
+			nil,
+		)
+	}
+	elems := cur.Elements()
+	if idx >= len(elems) {
+		return ashlar.Value{}, ashlar.NewError(
+			ashlar.ErrComposition,
+			ptr.Index(idx),
+			leaf.Provenance().Effective,
+			fmt.Sprintf("array index %d out of bounds (len %d) at %q", idx, len(elems), ptrOrRoot(ptr)),
+			nil,
+		)
+	}
+	updated, err := applyOverrideAt(policy, elems[idx], ptr.Index(idx), rest, leaf)
+	if err != nil {
+		return ashlar.Value{}, err
+	}
+	elems[idx] = updated
+	return ashlar.ArrayValue(elems, cur.Provenance()), nil
+}
+
+func applyOverrideInObject(
+	policy CompositionPolicy,
+	cur ashlar.Value,
+	childPtr ashlar.Pointer,
+	head string,
+	rest []string,
+	leaf ashlar.Value,
+) (ashlar.Value, error) {
+	members := cur.Members()
+	for i, m := range members {
+		if m.Key == head {
+			updated, err := applyOverrideAt(policy, m.Value, childPtr, rest, leaf)
 			if err != nil {
 				return ashlar.Value{}, err
 			}
 			members[i].Value = updated
-		}
-		return ashlar.ObjectValue(members, val.Provenance())
-	case ashlar.KindArray:
-		elems := val.Elements()
-		for i, el := range elems {
-			updated, err := interpolateTreeScalars(el, ptr.Index(i), env, red)
-			if err != nil {
-				return ashlar.Value{}, err
+			if len(rest) == 0 && leaf.Provenance().Effective.Valid() {
+				members[i].KeyOrigin = leaf.Provenance().Effective
 			}
-			elems[i] = updated
-		}
-		return ashlar.ArrayValue(elems, val.Provenance()), nil
-	default:
-		return val, nil
-	}
-}
-
-func interpolateSingleString(
-	val ashlar.Value,
-	ptr ashlar.Pointer,
-	s string,
-	env EnvBinding,
-	red ashlar.Redactor,
-) (ashlar.Value, error) {
-	matches := reEnvInterpolate.FindAllStringSubmatch(s, -1)
-	var firstVar string
-	sensitive := val.Provenance().Sensitive || red.IsSensitive(ptr, ptr.LastToken())
-	expanded := s
-	for _, m := range matches {
-		varName := m[1]
-		if firstVar == "" {
-			firstVar = varName
-		}
-		if red.IsSensitive(ptr, varName) {
-			sensitive = true
-		}
-		envVal, ok := env.lookup(varName)
-		if !ok || envVal == "" {
-			return ashlar.Value{}, ashlar.NewError(
-				ashlar.ErrUnresolved,
-				ptr,
-				val.Provenance().Effective,
-				fmt.Sprintf("unresolved environment variable %q in ${%s}", varName, varName),
-				nil,
-			)
-		}
-		expanded = strings.ReplaceAll(expanded, m[0], envVal)
-	}
-	envVal := ashlar.StringValue(expanded, ashlar.NewProvenance(ashlar.EnvOrigin(firstVar), sensitive))
-	return val.OverrideWith(envVal, red, ptr), nil
-}
-
-func collectEnvBindings(root ashlar.Value, env EnvBinding) map[ashlar.Pointer]string {
-	out := make(map[ashlar.Pointer]string)
-	for ptr, name := range env.Bindings {
-		if name != "" {
-			out[ptr] = name
+			return ashlar.ObjectValue(members, cur.Provenance())
 		}
 	}
-	if strings.TrimSpace(env.Prefix) != "" && root.IsPresent() {
-		collectLeafEnvNames(root, ashlar.RootPointer, strings.TrimSpace(env.Prefix), out)
+	created, err := applyOverrideAt(policy, ashlar.OmittedValue(), childPtr, rest, leaf)
+	if err != nil {
+		return ashlar.Value{}, err
 	}
-	return out
-}
-
-func collectLeafEnvNames(val ashlar.Value, ptr ashlar.Pointer, prefix string, out map[ashlar.Pointer]string) {
-	if val.Kind() == ashlar.KindObject {
-		for _, m := range val.Members() {
-			collectLeafEnvNames(m.Value, ptr.Child(m.Key), prefix, out)
-		}
-		return
-	}
-	if ptr == ashlar.RootPointer {
-		return
-	}
-	if _, exists := out[ptr]; exists {
-		return
-	}
-	tokens, err := ptr.Tokens()
-	if err != nil || len(tokens) == 0 {
-		return
-	}
-	parts := make([]string, 0, len(tokens)+1)
-	parts = append(parts, strings.ToUpper(prefix))
-	for _, t := range tokens {
-		parts = append(parts, strings.ToUpper(strings.ReplaceAll(t, "-", "_")))
-	}
-	out[ptr] = strings.Join(parts, "_")
-}
-
-func coerceEnvScalar(
-	raw string,
-	targetKind ashlar.Kind,
-	prov ashlar.Provenance,
-	ptr ashlar.Pointer,
-) (ashlar.Value, error) {
-	switch targetKind {
-	case ashlar.KindBool:
-		b, err := strconv.ParseBool(strings.TrimSpace(raw))
-		if err != nil {
-			return ashlar.Value{}, ashlar.NewError(
-				ashlar.ErrValidation,
-				ptr,
-				prov.Effective,
-				"invalid boolean value in environment variable",
-				err,
-			)
-		}
-		return ashlar.BoolValue(b, prov), nil
-	case ashlar.KindNumber:
-		v, err := ashlar.NumberValue(strings.TrimSpace(raw), prov)
-		if err != nil {
-			return ashlar.Value{}, ashlar.NewError(
-				ashlar.ErrValidation,
-				ptr,
-				prov.Effective,
-				"invalid numeric value in environment variable",
-				nil,
-			)
-		}
-		return v, nil
-	default:
-		return ashlar.StringValue(raw, prov), nil
-	}
+	members = append(members, ashlar.Member{
+		Key:       head,
+		KeyOrigin: leaf.Provenance().Effective,
+		Value:     created,
+	})
+	return ashlar.ObjectValue(members, cur.Provenance())
 }
 
 func verifyRequiredPointers(root ashlar.Value, required []ashlar.Pointer) error {
