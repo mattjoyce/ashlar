@@ -4,7 +4,7 @@ An **ashlar** is a stone dressed and squared so it fits precisely with other sto
 
 **Ashlar** is a Go library for strict document reading, structural schema validation, and traceable runtime configuration composition. Configuration fragments, environment overrides, and explicit flags compose predictably into a validated configuration whose effective values remain traceable to their sources.
 
-> **Status:** Specification and initial repository setup.
+> **Status:** v0.1.0. Pre-1.0: the public surface in `SPEC.md` is implemented and reviewed, but may still change before v1.0.0.
 
 ---
 
@@ -35,6 +35,14 @@ Ashlar deliberately refuses pieces that do not fit rather than silently reshapin
 | Environment lookup, interpolation hooks, and explicit override layering | Environment prefixes, supported keys, legacy aliases, and precedence rules |
 | Independently usable structural validation via JSON Schema (Draft 2020-12) | Schemas, canonicalization, cryptographic hashing, and catalog admission |
 | Path-resolution primitives and redacted diagnostic formatting | Which fields are paths, their resolution bases, and secret/integrity providers |
+
+### Redaction
+
+A node is redacted when its own provenance is marked sensitive or the active `Redactor` classifies its pointer as sensitive. A `CompositionPolicy.Redactor` you supply **replaces** `DefaultRedactor()`; it does not extend it. To keep the default secret-key rules and add your own, combine them:
+
+```go
+policy.Redactor = ashlar.CombineRedactors(ashlar.DefaultRedactor(), myRedactor)
+```
 
 ---
 
