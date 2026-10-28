@@ -1,0 +1,43 @@
+# Binaries and build artifacts
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test and coverage artifacts
+*.test
+*.out
+/coverage.*
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Local environment and secret files
+.env
+.env.local
+*.local.yaml
+*.secret
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local agent and tool state
+.claude/
+.codex/
+.agent-notes/
+.algo/
+gosec.json
+graphify-out/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
