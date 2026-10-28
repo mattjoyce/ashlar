@@ -149,8 +149,9 @@ func unescapeToken(s string) string {
 }
 
 // At resolves an RFC 6901 JSON Pointer against v, returning OmittedValue() if
-// ptr is invalid or any token along the path does not exist. Any ancestor
-// container sensitivity is inherited by the returned Value.
+// ptr is invalid or any token along the path does not exist. The returned Value
+// keeps its own Provenance; explicit sensitivity already reaches descendants
+// when a Value is built.
 func (v Value) At(ptr Pointer) Value {
 	if ptr == RootPointer {
 		return v
@@ -160,7 +161,6 @@ func (v Value) At(ptr Pointer) Value {
 		return OmittedValue()
 	}
 	cur := v
-	inheritedSens := cur.Provenance().Sensitive
 	for _, tok := range tokens {
 		switch cur.Kind() {
 		case KindObject:
@@ -178,12 +178,6 @@ func (v Value) At(ptr Pointer) Value {
 		default:
 			return OmittedValue()
 		}
-		if cur.Provenance().Sensitive {
-			inheritedSens = true
-		}
-	}
-	if inheritedSens && !cur.Provenance().Sensitive {
-		cur = cur.WithProvenance(cur.Provenance().WithSensitive(true))
 	}
 	return cur
 }

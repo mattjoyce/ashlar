@@ -139,6 +139,18 @@ func cloneEntries(in []ProvenanceEntry) []ProvenanceEntry {
 	return out
 }
 
+// withOwnProvenance returns a copy of v with prov set on v's node only. Unlike
+// WithProvenance it never copies sensitivity onto descendants, so each
+// descendant keeps the classification computed for it.
+func (v Value) withOwnProvenance(prov Provenance) Value {
+	if v.node == nil {
+		return Value{}
+	}
+	cp := *v.node
+	cp.prov = prov
+	return Value{node: &cp}
+}
+
 // FieldProvenance describes the effective provenance and override history of a
 // single leaf field in a Value tree.
 type FieldProvenance struct {
@@ -149,8 +161,8 @@ type FieldProvenance struct {
 
 // ExplainAll walks v in deterministic declaration order and returns the
 // provenance explanation for every leaf value (scalars, empty arrays, and empty
-// objects), honoring r (or DefaultRedactor when r is nil) and propagating
-// container sensitivity to all descendants.
+// objects), honoring r (or DefaultRedactor when r is nil). A node is redacted
+// when its own Provenance is sensitive or r classifies its pointer as sensitive.
 func (v Value) ExplainAll(r Redactor) []FieldProvenance {
 	if r == nil {
 		r = DefaultRedactor()
@@ -159,7 +171,7 @@ func (v Value) ExplainAll(r Redactor) []FieldProvenance {
 		return nil
 	}
 	var out []FieldProvenance
-	collectLeafProvenance(v, RootPointer, false, r, &out)
+	collectLeafProvenance(v, RootPointer, r, &out)
 	return out
 }
 
@@ -184,15 +196,15 @@ func (v Value) FormatProvenanceReport(r Redactor) string {
 	return b.String()
 }
 
-func collectLeafProvenance(v Value, ptr Pointer, parentSensitive bool, r Redactor, out *[]FieldProvenance) {
-	sens := effectiveNodeSensitivity(v, ptr, parentSensitive, r)
-	if sens && !v.Provenance().Sensitive {
-		v = v.WithProvenance(v.Provenance().WithSensitive(true))
-	}
+func collectLeafProvenance(v Value, ptr Pointer, r Redactor, out *[]FieldProvenance) {
+	sens := effectiveNodeSensitivity(v, ptr, r)
 	switch v.Kind() {
 	case KindObject:
 		members := v.Members()
 		if len(members) == 0 {
+			if sens && !v.Provenance().Sensitive {
+				v = v.withOwnProvenance(v.Provenance().WithSensitive(true))
+			}
 			*out = append(*out, FieldProvenance{
 				Pointer:     ptr,
 				Provenance:  v.Provenance(),
@@ -201,13 +213,14 @@ func collectLeafProvenance(v Value, ptr Pointer, parentSensitive bool, r Redacto
 			return
 		}
 		for _, m := range members {
-			childPtr := ptr.Child(m.Key)
-			childSens := sens || IsSensitivePath(r, childPtr, m.Key)
-			collectLeafProvenance(m.Value, childPtr, childSens, r, out)
+			collectLeafProvenance(m.Value, ptr.Child(m.Key), r, out)
 		}
 	case KindArray:
 		elems := v.Elements()
 		if len(elems) == 0 {
+			if sens && !v.Provenance().Sensitive {
+				v = v.withOwnProvenance(v.Provenance().WithSensitive(true))
+			}
 			*out = append(*out, FieldProvenance{
 				Pointer:     ptr,
 				Provenance:  v.Provenance(),
@@ -216,9 +229,12 @@ func collectLeafProvenance(v Value, ptr Pointer, parentSensitive bool, r Redacto
 			return
 		}
 		for i, el := range elems {
-			collectLeafProvenance(el, ptr.Index(i), sens, r, out)
+			collectLeafProvenance(el, ptr.Index(i), r, out)
 		}
 	default:
+		if sens && !v.Provenance().Sensitive {
+			v = v.withOwnProvenance(v.Provenance().WithSensitive(true))
+		}
 		*out = append(*out, FieldProvenance{
 			Pointer:     ptr,
 			Provenance:  v.Provenance(),
@@ -227,53 +243,42 @@ func collectLeafProvenance(v Value, ptr Pointer, parentSensitive bool, r Redacto
 	}
 }
 
-func effectiveNodeSensitivity(v Value, ptr Pointer, parentSensitive bool, r Redactor) bool {
-	if v.Provenance().Sensitive {
-		return true
-	}
-	if kr, ok := r.(keyRedactor); ok {
-		leaf := leafKey(ptr)
-		if leaf != "" && hasSafeSuffix(leaf, kr.safe) {
-			return false
-		}
-	}
-	return parentSensitive || IsSensitivePath(r, ptr, ptr.LastToken())
+func effectiveNodeSensitivity(v Value, ptr Pointer, r Redactor) bool {
+	return v.Provenance().Sensitive || IsSensitivePath(r, ptr, ptr.LastToken())
 }
 
 // FreezeSensitivity evaluates r (or DefaultRedactor when r is nil) once across
-// v and returns an immutable Value with effective sensitivity (including
-// inherited container sensitivity) materialized into each node's Provenance.
+// v and returns an immutable Value with effective sensitivity (its own flag, or
+// r's classification of its pointer) materialized into each node's Provenance.
 func (v Value) FreezeSensitivity(r Redactor) Value {
 	if r == nil {
 		r = DefaultRedactor()
 	}
-	return freezeSensitivityAt(v, RootPointer, false, r)
+	return freezeSensitivityAt(v, RootPointer, r)
 }
 
-func freezeSensitivityAt(v Value, ptr Pointer, parentSensitive bool, r Redactor) Value {
+func freezeSensitivityAt(v Value, ptr Pointer, r Redactor) Value {
 	if v.IsOmitted() {
 		return v
 	}
-	sens := effectiveNodeSensitivity(v, ptr, parentSensitive, r)
-	prov := v.Provenance().WithSensitive(sens)
+	sens := effectiveNodeSensitivity(v, ptr, r)
 	switch v.Kind() {
 	case KindObject:
 		members := v.Members()
 		for i, m := range members {
-			childPtr := ptr.Child(m.Key)
-			childSens := sens || IsSensitivePath(r, childPtr, m.Key)
-			members[i].Value = freezeSensitivityAt(m.Value, childPtr, childSens, r)
+			members[i].Value = freezeSensitivityAt(m.Value, ptr.Child(m.Key), r)
 		}
-		obj, _ := ObjectValue(members, prov)
-		return obj
+		obj, _ := ObjectValue(members, v.Provenance())
+		return obj.withOwnProvenance(v.Provenance().WithSensitive(sens))
 	case KindArray:
 		elems := v.Elements()
 		for i, el := range elems {
-			elems[i] = freezeSensitivityAt(el, ptr.Index(i), sens, r)
+			elems[i] = freezeSensitivityAt(el, ptr.Index(i), r)
 		}
-		return ArrayValue(elems, prov)
+		arr := ArrayValue(elems, v.Provenance())
+		return arr.withOwnProvenance(v.Provenance().WithSensitive(sens))
 	default:
-		return v.WithProvenance(prov)
+		return v.withOwnProvenance(v.Provenance().WithSensitive(sens))
 	}
 }
 
@@ -327,30 +332,29 @@ func (v Value) Sanitize(r Redactor, useFingerprint bool) Value {
 	if r == nil {
 		r = DefaultRedactor()
 	}
-	return sanitizeTree(v, RootPointer, false, r, useFingerprint)
+	return sanitizeTree(v, RootPointer, r, useFingerprint)
 }
 
-func sanitizeTree(v Value, ptr Pointer, parentSensitive bool, r Redactor, useFingerprint bool) Value {
+func sanitizeTree(v Value, ptr Pointer, r Redactor, useFingerprint bool) Value {
 	if v.IsOmitted() {
 		return v
 	}
-	sens := effectiveNodeSensitivity(v, ptr, parentSensitive, r)
+	sens := effectiveNodeSensitivity(v, ptr, r)
 	switch v.Kind() {
 	case KindObject:
 		members := v.Members()
 		for i, m := range members {
-			childPtr := ptr.Child(m.Key)
-			keySens := sens || IsSensitivePath(r, childPtr, m.Key)
-			members[i].Value = sanitizeTree(m.Value, childPtr, keySens, r, useFingerprint)
+			members[i].Value = sanitizeTree(m.Value, ptr.Child(m.Key), r, useFingerprint)
 		}
-		obj, _ := ObjectValue(members, v.Provenance().WithSensitive(sens))
-		return obj
+		obj, _ := ObjectValue(members, v.Provenance())
+		return obj.withOwnProvenance(v.Provenance().WithSensitive(sens))
 	case KindArray:
 		elems := v.Elements()
 		for i, el := range elems {
-			elems[i] = sanitizeTree(el, ptr.Index(i), sens, r, useFingerprint)
+			elems[i] = sanitizeTree(el, ptr.Index(i), r, useFingerprint)
 		}
-		return ArrayValue(elems, v.Provenance().WithSensitive(sens))
+		arr := ArrayValue(elems, v.Provenance())
+		return arr.withOwnProvenance(v.Provenance().WithSensitive(sens))
 	default:
 		if !sens {
 			return v
