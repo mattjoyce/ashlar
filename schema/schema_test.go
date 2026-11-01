@@ -89,6 +89,19 @@ func TestBundleCompileAndFragmentTarget(t *testing.T) {
 	if err := wholeVal.Validate(fragmentDoc.Root(), nil); !errors.Is(err, ashlar.ErrSchema) {
 		t.Errorf("wholeVal.Validate(fragment) error = %v, want ErrSchema", err)
 	}
+
+	for _, tc := range []struct {
+		v    *schema.Validator
+		want string
+	}{
+		{lenientVal, "https://example.org/schemas/config.schema.json"},
+		{wholeVal, "https://example.org/schemas/config.schema.json#/$defs/WholeConfig"},
+		{nil, ""},
+	} {
+		if got := tc.v.TargetURI(); got != tc.want {
+			t.Errorf("TargetURI() = %q, want %q", got, tc.want)
+		}
+	}
 }
 
 func TestValidateReportsSourceLocationsAndRedactsSecrets(t *testing.T) {
