@@ -4,20 +4,14 @@ This document governs how code and specifications are written in **Ashlar**. It 
 
 ---
 
-## 1. Guiding Design Lens — Hickey × Armstrong
+## 1. Where Design Lives, and the Review Lens
 
-Every design proposal, API boundary, and code review runs through **Hickey × Armstrong** (*structure × runtime*):
+This file governs how work is done: coding standards, testing, quality gates, and commit discipline. It does not decide what Ashlar does.
 
-- **Hickey (Structure — Decomplect Concerns):**
-  - **Simple, not merely easy.** Prefer fewer, orthogonal concepts over convenience affordances that braid independent concerns together.
-  - **Distinguish value, state, and identity.** A parsed document, a schema, and a resolved configuration are immutable **values**. Provenance is part of the resolved value, not mutable side-channel state.
-  - **Unbraid mechanism from policy.** Ashlar owns document reading, structural validation plumbing, provenance tracking, and composition under declared rules. Consuming applications own their configuration types, schemas, domain semantics, secret stores, and canonical hashes.
-  - **Quarantine data contracts from runtime composition.** JSON contract/manifest reading and validation must remain usable without includes, merging, environment interpolation, or default insertion, and must never mutate raw bytes or number spellings.
-
-- **Armstrong (Runtime — Fail Fast, Fail Closed):**
-  - **Reject pieces that do not fit.** Duplicate keys, trailing tokens, unknown fields in closed structures, include cycles, and unresolved required values fail loudly with source-located errors (`file:line:column`). A required value that no layer set has no source, so its error carries the JSON Pointer and no location rather than a guessed one.
-  - **All-or-nothing resolution.** A broken fragment or invalid override produces no partial configuration.
-  - **Never leak secrets.** Diagnostics, provenance explanations, and error messages must redact every value classified as sensitive, by the caller's `Redactor` or `DefaultRedactor`. Deciding what is sensitive is the caller's policy. Decode errors otherwise follow Go convention and may quote the offending value, as `strconv` and `time` errors do. Load-time errors run before any caller policy applies, so they quote no document content.
+- **Product design lives in `SPEC.md`.** Its §1 invariants and public surface say what Ashlar guarantees. The README's mechanism-versus-policy table says what Ashlar owns and what the consuming application owns. Argue a design question from those and from what consumers need. Change them by an explicit decision recorded in `SPEC.md`, never by citing this file.
+- **Review lens: Hickey × Armstrong** (*structure × runtime*). Run design proposals, API boundaries, and code reviews through it as a set of questions, not as rules:
+  - **Hickey.** Is this simple rather than merely easy? Does it keep value, state, and identity apart? Does it braid mechanism with a policy the caller should own?
+  - **Armstrong.** Does a piece that does not fit fail fast, loudly, and at its source? Can a failure leave a partial result the spec does not allow? Who decides what happens next, and do they get enough information to decide?
 
 ---
 
