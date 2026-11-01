@@ -37,12 +37,15 @@ func checkKnownKeys(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error 
 			return nil
 		}
 		fields := indexStructFields(t)
+		if fields.shapeErr != "" {
+			return fields.shapeError(val, ptr)
+		}
 		for _, m := range val.Members() {
-			idxPath, ok := fields[m.Key]
+			ft, ok := fields.target(t, m.Key)
 			if !ok {
 				return unknownFieldErr(ptr, m)
 			}
-			if err := checkKnownKeys(m.Value, ptr.Child(m.Key), t.FieldByIndex(idxPath).Type); err != nil {
+			if err := checkKnownKeys(m.Value, ptr.Child(m.Key), ft); err != nil {
 				return err
 			}
 		}
@@ -76,53 +79,123 @@ func unknownFieldErr(ptr ashlar.Pointer, m ashlar.Member) error {
 	)
 }
 
-// indexStructFields maps each YAML key a struct accepts to the index path of
-// its field, promoting the fields of embedded and inline structs.
-func indexStructFields(t reflect.Type) map[string][]int {
-	out := make(map[string][]int)
-	indexStructFieldsInto(t, nil, out, map[reflect.Type]bool{t: true})
-	return out
+// structFields is the decoder's view of one struct type. keys maps each
+// named YAML key, including keys promoted from embedded and inline structs, to
+// its field's index path. catchAll is the index of the struct's own inline map
+// field, or -1 when the struct is closed. shapeErr, when set, describes an
+// inline map the decoder does not support; it is reported whenever a mapping
+// is decoded into the struct.
+type structFields struct {
+	keys     map[string][]int
+	catchAll int
+	shapeErr string
 }
 
-// indexStructFieldsInto adds t's keys to out. onPath holds the struct types
-// already being expanded on this branch, so a type that embeds itself, such as
-// struct{ *T }, is not expanded again and cannot recurse forever.
-func indexStructFieldsInto(t reflect.Type, prefix []int, out map[string][]int, onPath map[reflect.Type]bool) {
+// target returns the field type a key decodes into: its named field, else the
+// catch-all's element type. It reports false when the struct has no place for
+// the key.
+func (sf structFields) target(t reflect.Type, key string) (reflect.Type, bool) {
+	if idxPath, ok := sf.keys[key]; ok {
+		return t.FieldByIndex(idxPath).Type, true
+	}
+	if sf.catchAll >= 0 {
+		return t.Field(sf.catchAll).Type.Elem(), true
+	}
+	return nil, false
+}
+
+// shapeError reports sf.shapeErr at the struct mapping val decoded at ptr.
+func (sf structFields) shapeError(val ashlar.Value, ptr ashlar.Pointer) error {
+	return ashlar.NewError(ashlar.ErrValidation, ptr, val.Provenance().Effective, sf.shapeErr, nil)
+}
+
+// indexStructFields indexes the keys struct type t accepts, promoting the
+// fields of embedded and inline structs, and finds its inline map catch-all.
+func indexStructFields(t reflect.Type) structFields {
+	sf := structFields{keys: make(map[string][]int), catchAll: -1}
+	sf.indexInto(t, t, nil, map[reflect.Type]bool{t: true})
+	return sf
+}
+
+// indexInto adds the keys of t, reached from root through prefix, to sf.
+// onPath holds the struct types already being expanded on this branch, so a
+// type that embeds itself, such as struct{ *T }, is not expanded again and
+// cannot recurse forever.
+func (sf *structFields) indexInto(root, t reflect.Type, prefix []int, onPath map[reflect.Type]bool) {
 	for i := 0; i < t.NumField(); i++ {
-		sf := t.Field(i)
+		f := t.Field(i)
 		idxPath := append(append([]int(nil), prefix...), i)
-		name, skip, inline := parseFieldTag(sf)
+		name, skip, inline := parseFieldTag(f)
 		if skip {
+			continue
+		}
+		if inline && isMapOrMapPointer(f.Type) {
+			// An unexported inline map cannot be set, so it is ignored like
+			// any unexported field and the struct stays closed.
+			if f.IsExported() {
+				sf.addCatchAll(root, t, f, prefix)
+			}
 			continue
 		}
 		// A named unexported field cannot be set through reflection, so an
 		// inline tag on one is ignored like any unexported field. An embedded
 		// unexported struct still promotes its exported fields, which can be
 		// set.
-		if (sf.Anonymous && name == "") || (inline && (sf.Anonymous || sf.IsExported())) {
-			ft := sf.Type
+		if (f.Anonymous && name == "") || (inline && (f.Anonymous || f.IsExported())) {
+			ft := f.Type
 			if ft.Kind() == reflect.Pointer {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
 				if !onPath[ft] {
 					onPath[ft] = true
-					indexStructFieldsInto(ft, idxPath, out, onPath)
+					sf.indexInto(root, ft, idxPath, onPath)
 					delete(onPath, ft)
 				}
 				continue
 			}
 		}
-		if !sf.IsExported() {
+		if !f.IsExported() {
 			continue
 		}
 		if name == "" {
-			name = strings.ToLower(sf.Name)
+			name = strings.ToLower(f.Name)
 		}
-		if _, exists := out[name]; !exists {
-			out[name] = idxPath
+		if _, exists := sf.keys[name]; !exists {
+			sf.keys[name] = idxPath
 		}
 	}
+}
+
+// addCatchAll records f, an exported inline map field of owner, as root's
+// catch-all, or records why it cannot be one. Only the first shape problem is
+// kept.
+func (sf *structFields) addCatchAll(root, owner reflect.Type, f reflect.StructField, prefix []int) {
+	if sf.shapeErr != "" {
+		return
+	}
+	switch {
+	case prefix != nil:
+		sf.shapeErr = fmt.Sprintf(
+			"%s: inline map field %s.%s is inside an embedded or inline struct, which is not supported; declare the inline map on %s itself",
+			root, owner, f.Name, root)
+	case f.Type.Kind() == reflect.Pointer:
+		sf.shapeErr = fmt.Sprintf("%s: inline field %s must be a map, not a pointer to a map", root, f.Name)
+	case f.Type.Key().Kind() != reflect.String:
+		sf.shapeErr = fmt.Sprintf("%s: inline map field %s must have string keys, got %s", root, f.Name, f.Type.Key())
+	case sf.catchAll >= 0:
+		sf.shapeErr = fmt.Sprintf("%s: more than one inline map field (%s and %s)", root, root.Field(sf.catchAll).Name, f.Name)
+	default:
+		sf.catchAll = f.Index[0]
+	}
+}
+
+// isMapOrMapPointer reports whether t is a map or a pointer to a map.
+func isMapOrMapPointer(t reflect.Type) bool {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.Kind() == reflect.Map
 }
 
 func parseFieldTag(sf reflect.StructField) (name string, skip bool, inline bool) {

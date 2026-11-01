@@ -196,10 +196,18 @@ func (dc decoder) decodeStruct(val ashlar.Value, ptr ashlar.Pointer, dst reflect
 		return dc.validationErr(val, ptr, fmt.Sprintf("expected mapping for %s, got %s", dst.Type(), val.Kind()), nil)
 	}
 	fields := indexStructFields(dst.Type())
+	if fields.shapeErr != "" {
+		return fields.shapeError(val, ptr)
+	}
+	var extra []ashlar.Member
 	for _, m := range val.Members() {
-		idxPath, ok := fields[m.Key]
+		idxPath, ok := fields.keys[m.Key]
 		if !ok {
-			return unknownFieldErr(ptr, m)
+			if fields.catchAll < 0 {
+				return unknownFieldErr(ptr, m)
+			}
+			extra = append(extra, m)
+			continue
 		}
 		targetField, ok := fieldByIndexPath(dst, idxPath)
 		if !ok {
@@ -222,6 +230,16 @@ func (dc decoder) decodeStruct(val ashlar.Value, ptr ashlar.Pointer, dst reflect
 			return err
 		}
 	}
+	// Keys no named field claims fill the catch-all, replacing it as decodeMap
+	// replaces any map. With none, the catch-all is left as it was.
+	if len(extra) > 0 {
+		catchAll := dst.Field(fields.catchAll)
+		out, err := dc.buildMap(extra, ptr, catchAll.Type())
+		if err != nil {
+			return err
+		}
+		catchAll.Set(out)
+	}
 	return nil
 }
 
@@ -232,17 +250,27 @@ func (dc decoder) decodeMap(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Va
 	if dst.Type().Key().Kind() != reflect.String {
 		return dc.validationErr(val, ptr, "map key type must be string", nil)
 	}
-	out := reflect.MakeMapWithSize(dst.Type(), val.Len())
-	elemType := dst.Type().Elem()
-	for _, m := range val.Members() {
-		elemVal := reflect.New(elemType).Elem()
-		if err := dc.decodeInto(m.Value, ptr.Child(m.Key), elemVal); err != nil {
-			return err
-		}
-		out.SetMapIndex(reflect.ValueOf(m.Key).Convert(dst.Type().Key()), elemVal)
+	out, err := dc.buildMap(val.Members(), ptr, dst.Type())
+	if err != nil {
+		return err
 	}
 	dst.Set(out)
 	return nil
+}
+
+// buildMap decodes members, found in the mapping at ptr, into a fresh map of
+// type mt, whose key kind must be string. Each entry is decoded at its own
+// pointer, ptr.Child(key).
+func (dc decoder) buildMap(members []ashlar.Member, ptr ashlar.Pointer, mt reflect.Type) (reflect.Value, error) {
+	out := reflect.MakeMapWithSize(mt, len(members))
+	for _, m := range members {
+		elemVal := reflect.New(mt.Elem()).Elem()
+		if err := dc.decodeInto(m.Value, ptr.Child(m.Key), elemVal); err != nil {
+			return reflect.Value{}, err
+		}
+		out.SetMapIndex(reflect.ValueOf(m.Key).Convert(mt.Key()), elemVal)
+	}
+	return out, nil
 }
 
 func (dc decoder) decodeSlice(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
