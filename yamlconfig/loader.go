@@ -88,7 +88,7 @@ func Read(source string, raw []byte, via ...ashlar.SourceSpan) (ashlar.Value, er
 			ashlar.RootPointer,
 			classifyYAMLOrigin(source, via, err),
 			"trailing content after YAML document",
-			err,
+			withheldError{what: "YAML parser", err: err},
 		)
 	}
 
@@ -126,16 +126,18 @@ func ReadFS(fsys fs.FS, path string, via ...ashlar.SourceSpan) (ashlar.Value, er
 // classifyYAMLError converts a yaml.v3 parse error into an ErrSyntax located at
 // the line yaml.v3 names. yaml.v3 reports no column, and for parser errors the
 // line can be where the enclosing construct starts, so the origin carries the
-// line only and never a guessed column. Duplicate keys never reach here: yaml.v3
-// accepts them when decoding into a yaml.Node, and convertMappingNode rejects
-// them with exact positions.
+// line only and never a guessed column. yaml.v3's message can quote document
+// content (an unknown anchor name, for example), so it is withheld; errors.As
+// still reaches it. Duplicate keys never reach here: yaml.v3 accepts them when
+// decoding into a yaml.Node, and convertMappingNode rejects them with exact
+// positions.
 func classifyYAMLError(source string, via []ashlar.SourceSpan, err error) error {
 	return ashlar.NewError(
 		ashlar.ErrSyntax,
 		ashlar.RootPointer,
 		classifyYAMLOrigin(source, via, err),
-		err.Error(),
-		err,
+		"invalid YAML syntax",
+		withheldError{what: "YAML parser", err: err},
 	)
 }
 
@@ -273,7 +275,7 @@ func convertScalarNode(ptr ashlar.Pointer, n *yaml.Node, prov ashlar.Provenance)
 	case "!!bool":
 		var b bool
 		if err := n.Decode(&b); err != nil {
-			return ashlar.Value{}, ashlar.NewError(ashlar.ErrSyntax, ptr, prov.Effective, "invalid YAML boolean", err)
+			return ashlar.Value{}, scalarSyntaxErr(ptr, prov, "invalid YAML boolean")
 		}
 		return ashlar.BoolValue(b, prov), nil
 	case "!!int":

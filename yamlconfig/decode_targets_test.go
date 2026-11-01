@@ -602,7 +602,15 @@ func TestDecodeIntoAnyKeepsUnrepresentableNumbers(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	doc := "huge_float: 1e400\nhuge_int: 123456789012345678901234567890\nlist: [1e400, 1.5, 7]\n"
+	doc := "huge_float: 1e400\n" +
+		"huge_int: 123456789012345678901234567890\n" +
+		"rounded_decimal_int: 9007199254740993.0\n" +
+		"rounded_exponent_int: 9007199254740993e0\n" +
+		"underflow: 1e-400\n" +
+		"negative_underflow: -1e-400\n" +
+		"tenth: 0.1\n" +
+		"exact_exponent: 1.5e3\n" +
+		"list: [1e400, 1.5, 7]\n"
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +625,16 @@ func TestDecodeIntoAnyKeepsUnrepresentableNumbers(t *testing.T) {
 	want := map[string]any{
 		"huge_float": json.Number("1e400"),
 		"huge_int":   json.Number("123456789012345678901234567890"),
-		"list":       []any{json.Number("1e400"), 1.5, int64(7)},
+		// float64 would round these to 9007199254740992.
+		"rounded_decimal_int":  json.Number("9007199254740993.0"),
+		"rounded_exponent_int": json.Number("9007199254740993e0"),
+		// float64 would flush these to zero.
+		"underflow":          json.Number("1e-400"),
+		"negative_underflow": json.Number("-1e-400"),
+		// float64's shortest form of these reads back as the same value.
+		"tenth":          0.1,
+		"exact_exponent": 1500.0,
+		"list":           []any{json.Number("1e400"), 1.5, int64(7)},
 	}
 
 	decoders := map[string]func(any) error{

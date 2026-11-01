@@ -12,14 +12,19 @@ import (
 	"github.com/mattjoyce/ashlar"
 )
 
-// withheldHookError wraps an error returned by a caller-supplied hook. Its
+// withheldError wraps an error whose text may quote configuration content: a
+// caller-supplied hook's error, a yaml.v3 parse error, or a filesystem error
+// naming an include target. Its
 // Error text never includes the hook's message, which may carry secret
 // material; errors.Is and errors.As still reach the original error.
-type withheldHookError struct{ err error }
+type withheldError struct {
+	what string
+	err  error
+}
 
-func (e withheldHookError) Error() string { return "hook error withheld from diagnostics" }
+func (e withheldError) Error() string { return e.what + " error withheld from diagnostics" }
 
-func (e withheldHookError) Unwrap() error { return e.err }
+func (e withheldError) Unwrap() error { return e.err }
 
 // ByteTransformer is a narrow hook invoked on raw file bytes before YAML or
 // environment file parsing (e.g., for in-memory age decryption).
@@ -159,7 +164,7 @@ func (g *graphLoader) readAndVerify(
 		if errors.Is(err, fs.ErrNotExist) {
 			cat = ashlar.ErrNotFound
 		}
-		return nil, ashlar.NewError(cat, ashlar.RootPointer, orig, fmt.Sprintf("read %q", cleanPath), err)
+		return nil, ashlar.NewError(cat, ashlar.RootPointer, orig, "read included file", withheldError{what: "filesystem", err: err})
 	}
 	if g.opts.Verifier != nil {
 		if err := g.opts.Verifier(ctx, cleanPath, raw); err != nil {
@@ -168,7 +173,7 @@ func (g *graphLoader) readAndVerify(
 				ashlar.RootPointer,
 				orig,
 				fmt.Sprintf("integrity verification failed for %q", cleanPath),
-				withheldHookError{err: err},
+				withheldError{what: "hook", err: err},
 			)
 		}
 	}
@@ -180,7 +185,7 @@ func (g *graphLoader) readAndVerify(
 				ashlar.RootPointer,
 				orig,
 				fmt.Sprintf("transform bytes for %q", cleanPath),
-				withheldHookError{err: err},
+				withheldError{what: "hook", err: err},
 			)
 		}
 		raw = transformed
@@ -215,15 +220,15 @@ func (g *graphLoader) expandIncludeTarget(
 			cat,
 			spec.ptr,
 			orig,
-			fmt.Sprintf("included path %q not found", cleanTarget),
-			err,
+			"included path not found",
+			withheldError{what: "filesystem", err: err},
 		)
 	}
 
 	if info.IsDir() {
 		files, err := walkYAMLDir(g.fsys, cleanTarget)
 		if err != nil {
-			return ashlar.NewError(ashlar.ErrComposition, spec.ptr, orig, "walk included directory", err)
+			return ashlar.NewError(ashlar.ErrComposition, spec.ptr, orig, "walk included directory", withheldError{what: "filesystem", err: err})
 		}
 		for _, f := range files {
 			if err := g.checkAndLoadTarget(ctx, f, spec.ptr, orig, childVia, chain); err != nil {
@@ -348,7 +353,7 @@ func cleanFSPath(raw string, ptr ashlar.Pointer, orig ashlar.Origin) (string, er
 			ashlar.ErrComposition,
 			ptr,
 			orig,
-			fmt.Sprintf("invalid or escaping include path %q", raw),
+			"invalid or escaping include path",
 			nil,
 		)
 	}

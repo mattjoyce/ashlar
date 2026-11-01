@@ -3,7 +3,6 @@ package yamlconfig
 import (
 	"bufio"
 	"bytes"
-	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -44,7 +43,9 @@ func ParseDotEnv(source string, raw []byte) (map[string]string, error) {
 		}
 		key = strings.TrimSpace(key)
 		if !isValidEnvName(key) {
-			return nil, dotEnvSyntaxErr(source, lineNum, fmt.Sprintf("invalid environment variable name %q", key))
+			// The rejected text is not echoed: a malformed line such as
+			// "TOKEN secret=x" puts the value into the presumed name.
+			return nil, dotEnvSyntaxErr(source, lineNum, "invalid environment variable name")
 		}
 		val = unquoteDotEnvValue(strings.TrimSpace(val))
 		vars[key] = val
