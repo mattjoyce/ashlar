@@ -39,9 +39,11 @@ func (r Resolved) SourceHash() string {
 }
 
 // DecodeStrict decodes r.Root() into dst, rejecting unknown struct fields with
-// source-located ashlar.ErrUnknownField diagnostics.
+// source-located ashlar.ErrUnknownField diagnostics. Decode errors redact
+// values using only the sensitivity frozen at resolution time, so they follow
+// the same CompositionPolicy.Redactor as every other Resolved report.
 func (r Resolved) DecodeStrict(dst any) error {
-	return DecodeValueStrict(r.root, dst)
+	return decoder{redactor: frozenOnly}.decodeRoot(r.root, dst)
 }
 
 // frozenOnly classifies nothing as sensitive by key, so Resolved formatting
