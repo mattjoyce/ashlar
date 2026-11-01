@@ -15,7 +15,7 @@ Every design proposal, API boundary, and code review runs through **Hickey × Ar
   - **Quarantine data contracts from runtime composition.** JSON contract/manifest reading and validation must remain usable without includes, merging, environment interpolation, or default insertion, and must never mutate raw bytes or number spellings.
 
 - **Armstrong (Runtime — Fail Fast, Fail Closed):**
-  - **Reject pieces that do not fit.** Duplicate keys, trailing tokens, unknown fields in closed structures, include cycles, and unresolved required values fail loudly with source-located errors (`file:line:column`).
+  - **Reject pieces that do not fit.** Duplicate keys, trailing tokens, unknown fields in closed structures, include cycles, and unresolved required values fail loudly with source-located errors (`file:line:column`). A required value that no layer set has no source, so its error carries the JSON Pointer and no location rather than a guessed one.
   - **All-or-nothing resolution.** A broken fragment or invalid override produces no partial configuration.
   - **Never leak secrets.** Diagnostics, provenance explanations, and error messages must redact sensitive values and never echo raw secret material.
 

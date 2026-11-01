@@ -18,6 +18,7 @@ This specification defines the package boundaries, immutable value and provenanc
    Multi-fragment YAML configurations compose at the immutable `Value` node level under caller-declared per-path rules before decoding into Go structs. Go zero-value struct merging is never used.
 5. **Fail Fast, Fail Closed, Redact Secrets:**
    Duplicate keys, trailing tokens/documents, unknown fields, unresolved required values, and include cycles fail all-or-nothing with source-located errors (`file:line:column`). Sensitive values are redacted in all `.Error()` strings, diagnostics, and provenance explanations.
+   A required value that no layer set is the one failure without a source: there is no node to point at, and the requirement comes from the caller's `Required` list. Its error carries the JSON Pointer and a zero `Origin`. A required value that is null or blank is reported at its own origin.
    One exception: YAML syntax errors the parser rejects (malformed tokens, bad indentation, unclosed collections) are located `file:line`. yaml.v3 reports a line but no column, and for parser errors the line can be where the enclosing construct starts. Ashlar reports that line and never guesses a column. JSON syntax errors carry a full `file:line:column`.
 
 ---

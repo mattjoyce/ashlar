@@ -2,8 +2,10 @@ package yamlconfig_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mattjoyce/ashlar"
@@ -247,9 +249,9 @@ func TestIncludeCyclesAreRejectedWithIncludeSiteLocation(t *testing.T) {
 
 // TestResolveRejectsUnresolvedRequiredPointers checks that every pointer in
 // ResolveOptions.Required that is omitted, null, or a blank string fails
-// resolution with ashlar.ErrUnresolved, the required pointer, and the most
-// specific origin available: the offending node when it exists, otherwise
-// the document root.
+// resolution with ashlar.ErrUnresolved and the required pointer. A node that
+// exists is reported at its own origin. An omitted value has no source, so it
+// carries no origin at all rather than a guessed file location.
 func TestResolveRejectsUnresolvedRequiredPointers(t *testing.T) {
 	t.Parallel()
 
@@ -262,17 +264,17 @@ func TestResolveRejectsUnresolvedRequiredPointers(t *testing.T) {
 		wantLoc  string
 	}{
 		{
-			// Nothing to point at but the document that should hold it.
+			// No node, so no source location.
 			name:     "omitted_leaf",
 			yaml:     "service:\n  password: sekrit-123\n",
 			required: tokenPtr,
-			wantLoc:  "cfg.yaml:1:1",
+			wantLoc:  "",
 		},
 		{
 			name:     "omitted_parent",
 			yaml:     "service:\n  password: sekrit-123\n",
 			required: ashlar.NewPointer("database", "dsn"),
-			wantLoc:  "cfg.yaml:1:1",
+			wantLoc:  "",
 		},
 		{
 			// "  token: " is 9 bytes, so the value starts at 2:10.
@@ -561,5 +563,40 @@ func TestResolveFailurePartwayReturnsNoPartialConfiguration(t *testing.T) {
 			requireLocatedError(t, err, tc.sentinel, tc.wantLoc, tc.wantOrigin, plantedSecret)
 			requireNoPartialResolved(t, res)
 		})
+	}
+}
+
+// TestResolveOmittedRequiredHasNoOrigin checks that an omitted required value
+// in a multi-file configuration carries no origin. It used to borrow the root
+// origin, which is the last fragment's 1:1 and wrongly blamed that file.
+func TestResolveOmittedRequiredHasNoOrigin(t *testing.T) {
+	t.Parallel()
+	dir := writeTree(t, map[string]string{
+		"cfg.yaml":   "include:\n  - other.yaml\nservice:\n  port: 1\n",
+		"other.yaml": "service:\n  name: other\n",
+	})
+	required := ashlar.NewPointer("service", "token")
+
+	_, err := yamlconfig.Resolve(context.Background(), os.DirFS(dir), "cfg.yaml", yamlconfig.ResolveOptions{
+		Required: []ashlar.Pointer{required},
+	})
+	if !errors.Is(err, ashlar.ErrUnresolved) {
+		t.Fatalf("error = %v, want ErrUnresolved", err)
+	}
+	var aErr *ashlar.Error
+	if !errors.As(err, &aErr) {
+		t.Fatalf("errors.As(*ashlar.Error) = false; err = %v", err)
+	}
+	if aErr.Origin.Valid() || aErr.Origin.String() != "" {
+		t.Errorf("Origin = %v, want zero Origin", aErr.Origin)
+	}
+	if aErr.Pointer != required {
+		t.Errorf("Pointer = %q, want %q", aErr.Pointer, required)
+	}
+	if want := "(/service/token): "; !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("Error() = %q, want prefix %q", err.Error(), want)
+	}
+	if !strings.Contains(err.Error(), "not set by any layer") {
+		t.Errorf("Error() = %q, want it to say no layer set the value", err.Error())
 	}
 }
