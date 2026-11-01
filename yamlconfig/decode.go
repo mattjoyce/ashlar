@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -165,7 +166,15 @@ func (dc decoder) decodeStruct(val ashlar.Value, ptr ashlar.Pointer, dst reflect
 				nil,
 			)
 		}
-		targetField := fieldByIndexPath(dst, idxPath)
+		targetField, ok := fieldByIndexPath(dst, idxPath)
+		if !ok {
+			return dc.validationErr(
+				m.Value,
+				ptr.Child(m.Key),
+				fmt.Sprintf("cannot set field %q through a nil pointer to an unexported embedded struct in %s", m.Key, dst.Type()),
+				nil,
+			)
+		}
 		if err := dc.decodeInto(m.Value, ptr.Child(m.Key), targetField); err != nil {
 			return err
 		}
@@ -309,25 +318,33 @@ func parseFieldTag(sf reflect.StructField) (name string, skip bool, inline bool)
 	return name, false, inline
 }
 
-func fieldByIndexPath(v reflect.Value, path []int) reflect.Value {
+// fieldByIndexPath walks path from v, allocating nil embedded struct pointers
+// on the way. It reports false instead of panicking when a nil pointer cannot
+// be set, which happens for a pointer to an unexported embedded struct.
+func fieldByIndexPath(v reflect.Value, path []int) (reflect.Value, bool) {
 	cur := v
 	for _, idx := range path {
 		if cur.Kind() == reflect.Pointer {
 			if cur.IsNil() {
+				if !cur.CanSet() {
+					return reflect.Value{}, false
+				}
 				cur.Set(reflect.New(cur.Type().Elem()))
 			}
 			cur = cur.Elem()
 		}
 		cur = cur.Field(idx)
 	}
-	return cur
+	return cur, true
 }
 
 // valueToGoAny converts val to plain Go values. A number becomes int64 or
-// uint64 when it is an integer that fits, otherwise float64 when it is finite
-// in that range. A number neither can hold, such as 1e400 or an integer past
-// uint64, becomes json.Number with its exact lexeme rather than losing its
-// value. With exactNumbers set, every number becomes json.Number.
+// uint64 when its lexeme is an integer that fits, otherwise float64 when the
+// float64's shortest decimal form has the same value as the lexeme (so 0.1
+// stays a float64). Any other number, such as 1e400, 1e-400, an integer past
+// uint64, or 9007199254740993.0, becomes json.Number with its exact lexeme
+// rather than losing value. With exactNumbers set, every number becomes
+// json.Number.
 func valueToGoAny(val ashlar.Value, exactNumbers bool) any {
 	switch val.Kind() {
 	case ashlar.KindNull:
@@ -346,11 +363,7 @@ func valueToGoAny(val ashlar.Value, exactNumbers bool) any {
 		if u, err := val.Uint64(); err == nil {
 			return u
 		}
-		if !strings.ContainsAny(string(lex), ".eE") {
-			// An integer past uint64: float64 would round it.
-			return json.Number(lex)
-		}
-		if f, err := val.Float64(); err == nil {
+		if f, err := val.Float64(); err == nil && sameDecimal(string(lex), strconv.FormatFloat(f, 'g', -1, 64)) {
 			return f
 		}
 		return json.Number(lex)
@@ -417,4 +430,42 @@ func (dc decoder) validationErr(val ashlar.Value, ptr ashlar.Pointer, msg string
 		rawScalar,
 		val.Provenance().Sensitive,
 	)
+}
+
+// sameDecimal reports whether JSON number literals a and b denote the same
+// value. It compares sign, significant digits and decimal exponent as strings,
+// so a huge exponent costs nothing. A literal it cannot parse never matches.
+func sameDecimal(a, b string) bool {
+	na, okA := normalizeDecimal(a)
+	nb, okB := normalizeDecimal(b)
+	return okA && okB && na == nb
+}
+
+// normalizeDecimal reduces a JSON number literal to "sign digits e exponent",
+// where digits has no leading or trailing zeros and the value is
+// 0.digits × 10^exponent. Zero normalizes to "0" whatever its sign.
+func normalizeDecimal(lit string) (string, bool) {
+	sign := ""
+	if strings.HasPrefix(lit, "-") {
+		sign, lit = "-", lit[1:]
+	}
+	mant, expPart, hasExp := strings.Cut(strings.ToLower(lit), "e")
+	exp := 0
+	if hasExp {
+		e, err := strconv.Atoi(expPart)
+		if err != nil {
+			return "", false
+		}
+		exp = e
+	}
+	intPart, frac, _ := strings.Cut(mant, ".")
+	digits := intPart + frac
+	exp += len(intPart)
+	trimmed := strings.TrimLeft(digits, "0")
+	exp -= len(digits) - len(trimmed)
+	trimmed = strings.TrimRight(trimmed, "0")
+	if trimmed == "" {
+		return "0", true
+	}
+	return sign + trimmed + "e" + strconv.Itoa(exp), true
 }

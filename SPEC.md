@@ -182,8 +182,11 @@ type ProvenanceEntry struct {
 // value silently becoming a string. Decoding into an interface (any) yields
 // int64, uint64 or float64 when one holds the number exactly; otherwise, as
 // with 1e400 or an integer past uint64, it yields json.Number with the lexeme.
-// Load-time scalar conversion errors never quote the scalar, because no caller
-// redaction policy applies yet.
+// Load-time errors never quote document content, because no caller redaction
+// policy applies yet: scalar conversion failures, yaml.v3 parser messages
+// (which can name anchors), include targets, filesystem errors, malformed
+// dotenv names and unexpected JSON tokens all report kind and location only.
+// The underlying error is still reachable through errors.As.
 // Objects preserve both key lookup and deterministic declaration/sorted iteration.
 type Value struct {
 	// Unexported fields ensure immutability.

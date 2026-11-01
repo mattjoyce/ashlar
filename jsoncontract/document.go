@@ -73,7 +73,7 @@ func Read(source string, raw []byte) (Document, error) {
 			ashlar.ErrTrailingContent,
 			ashlar.RootPointer,
 			ashlar.FileOrigin(trailing.span),
-			fmt.Sprintf("unexpected trailing token %q after top-level JSON value", trailing.raw),
+			fmt.Sprintf("unexpected trailing %s after top-level JSON value", trailing.kind),
 			nil,
 		)
 	}
@@ -158,7 +158,7 @@ func (p *parser) parseValue(tok token, ptr ashlar.Pointer, depth int) (ashlar.Va
 	case tokLBracket:
 		return p.parseArray(tok.span.Start, ptr, depth+1)
 	default:
-		return ashlar.Value{}, p.lex.syntaxError(tok.span, ptr, fmt.Sprintf("unexpected token %q", tok.raw))
+		return ashlar.Value{}, p.lex.syntaxError(tok.span, ptr, fmt.Sprintf("unexpected %s", tok.kind))
 	}
 }
 

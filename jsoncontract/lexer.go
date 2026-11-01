@@ -25,6 +25,37 @@ const (
 	tokNull
 )
 
+// String names k for diagnostics without quoting any token content, which
+// may be secret.
+func (k tokenKind) String() string {
+	switch k {
+	case tokEOF:
+		return "end of input"
+	case tokLBrace:
+		return "'{'"
+	case tokRBrace:
+		return "'}'"
+	case tokLBracket:
+		return "'['"
+	case tokRBracket:
+		return "']'"
+	case tokColon:
+		return "':'"
+	case tokComma:
+		return "','"
+	case tokString:
+		return "string"
+	case tokNumber:
+		return "number"
+	case tokTrue, tokFalse:
+		return "boolean"
+	case tokNull:
+		return "null"
+	default:
+		return "token"
+	}
+}
+
 type token struct {
 	kind tokenKind
 	span ashlar.SourceSpan

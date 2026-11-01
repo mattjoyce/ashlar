@@ -295,6 +295,15 @@ func checkQuotedContent(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) er
 	if !ok {
 		return nil
 	}
+	base := t
+	for base.Kind() == reflect.Pointer {
+		base = base.Elem()
+	}
+	// A custom unmarshaler decides validity itself, may need the existing
+	// destination value, and must run once; leave it to the real decode.
+	if implementsCustomUnmarshaler(base) {
+		return nil
+	}
 	quoted, err := json.Marshal(s)
 	if err != nil {
 		return nil // A Go string always marshals; nothing to locate.
@@ -307,10 +316,6 @@ func checkQuotedContent(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) er
 	raw := append(append([]byte(`{"v":`), quoted...), '}')
 	if json.Unmarshal(raw, reflect.New(wrapper).Interface()) == nil {
 		return nil
-	}
-	base := t
-	for base.Kind() == reflect.Pointer {
-		base = base.Elem()
 	}
 	return ashlar.NewError(
 		ashlar.ErrValidation,
