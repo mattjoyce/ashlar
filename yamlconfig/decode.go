@@ -35,6 +35,17 @@ type decoder struct {
 // DefaultRedactor classifies its pointer, so values that were never resolved
 // under a policy are still protected.
 //
+// Struct tags: the "yaml" tag is read first, with "json" as the fallback, and
+// "-" excludes a field. An embedded struct, or a struct field tagged ",inline",
+// promotes its fields into the parent's keys. An exported map field tagged
+// ",inline" is a catch-all: it receives every key no named or promoted field
+// claims, each decoded at its own pointer (/timeouts/cpu). A struct without one
+// rejects unknown keys. A catch-all must have string-kinded keys, be the only
+// one on its struct, be a map rather than a pointer to one, and be declared on
+// the decoded struct itself rather than inside an embedded or inline struct;
+// otherwise decoding a mapping into the struct fails with ErrValidation. An
+// unexported inline map is ignored.
+//
 // Unknown keys are rejected before dst is written, so that failure leaves dst
 // untouched. Any other failure, such as a value of the wrong type or a custom
 // unmarshaler error, is found while decoding and can leave dst partly
@@ -189,58 +200,6 @@ func (dc decoder) parseErr(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type,
 		return dc.validationErr(val, ptr, fmt.Sprintf("cannot parse value as %s: %s", t, ashlar.RedactedLiteral), nil)
 	}
 	return dc.validationErr(val, ptr, fmt.Sprintf("cannot parse value as %s", t), cause)
-}
-
-func (dc decoder) decodeStruct(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
-	if val.Kind() != ashlar.KindObject {
-		return dc.validationErr(val, ptr, fmt.Sprintf("expected mapping for %s, got %s", dst.Type(), val.Kind()), nil)
-	}
-	fields := indexStructFields(dst.Type())
-	if fields.shapeErr != "" {
-		return fields.shapeError(val, ptr)
-	}
-	var extra []ashlar.Member
-	for _, m := range val.Members() {
-		idxPath, ok := fields.keys[m.Key]
-		if !ok {
-			if fields.catchAll < 0 {
-				return unknownFieldErr(ptr, m)
-			}
-			extra = append(extra, m)
-			continue
-		}
-		targetField, ok := fieldByIndexPath(dst, idxPath)
-		if !ok {
-			return dc.validationErr(
-				m.Value,
-				ptr.Child(m.Key),
-				fmt.Sprintf("cannot set field %q through a nil pointer to an unexported embedded struct in %s", m.Key, dst.Type()),
-				nil,
-			)
-		}
-		if !targetField.CanSet() {
-			return dc.validationErr(
-				m.Value,
-				ptr.Child(m.Key),
-				fmt.Sprintf("cannot set field %q in %s: it is unexported", m.Key, dst.Type()),
-				nil,
-			)
-		}
-		if err := dc.decodeInto(m.Value, ptr.Child(m.Key), targetField); err != nil {
-			return err
-		}
-	}
-	// Keys no named field claims fill the catch-all, replacing it as decodeMap
-	// replaces any map. With none, the catch-all is left as it was.
-	if len(extra) > 0 {
-		catchAll := dst.Field(fields.catchAll)
-		out, err := dc.buildMap(extra, ptr, catchAll.Type())
-		if err != nil {
-			return err
-		}
-		catchAll.Set(out)
-	}
-	return nil
 }
 
 func (dc decoder) decodeMap(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
