@@ -16,8 +16,7 @@ import (
 )
 
 var (
-	reYAMLMappingDup = regexp.MustCompile(`line (\d+): mapping key "([^"]+)" already defined at line (\d+)`)
-	reYAMLLine       = regexp.MustCompile(`line (\d+):`)
+	reYAMLLine = regexp.MustCompile(`line (\d+):`)
 )
 
 // Read parses raw YAML bytes from source into an immutable ashlar.Value tree,
@@ -58,7 +57,7 @@ func Read(source string, raw []byte, via ...ashlar.SourceSpan) (ashlar.Value, er
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	var docNode yaml.Node
 	if err := dec.Decode(&docNode); err != nil {
-		return ashlar.Value{}, classifyYAMLError(source, raw, via, err)
+		return ashlar.Value{}, classifyYAMLError(source, via, err)
 	}
 
 	var trailingNode yaml.Node
@@ -86,7 +85,7 @@ func Read(source string, raw []byte, via ...ashlar.SourceSpan) (ashlar.Value, er
 		return ashlar.Value{}, ashlar.NewError(
 			ashlar.ErrTrailingContent,
 			ashlar.RootPointer,
-			classifyYAMLOrigin(source, raw, via, err),
+			classifyYAMLOrigin(source, via, err),
 			"trailing content after YAML document",
 			err,
 		)
@@ -123,72 +122,33 @@ func ReadFS(fsys fs.FS, path string, via ...ashlar.SourceSpan) (ashlar.Value, er
 	return Read(path, raw, via...)
 }
 
-func classifyYAMLError(source string, raw []byte, via []ashlar.SourceSpan, err error) error {
-	msg := err.Error()
-	if m := reYAMLMappingDup.FindStringSubmatch(msg); len(m) == 4 {
-		dupLine, _ := strconv.Atoi(m[1])
-		key := m[2]
-		origLine, _ := strconv.Atoi(m[3])
-		dupCol := findKeyColumnOnLine(raw, dupLine, key)
-		origCol := findKeyColumnOnLine(raw, origLine, key)
-		dupSpan := ashlar.SourceSpan{
-			Source: source,
-			Start:  ashlar.SourcePos{Line: dupLine, Column: dupCol},
-		}
-		origSpan := ashlar.SourceSpan{
-			Source: source,
-			Start:  ashlar.SourcePos{Line: origLine, Column: origCol},
-		}
-		return ashlar.NewError(
-			ashlar.ErrDuplicateKey,
-			ashlar.NewPointer(key),
-			ashlar.FileOrigin(dupSpan, via...),
-			fmt.Sprintf("duplicate mapping key %q (first defined at %s)", key, origSpan.String()),
-			err,
-		)
-	}
+// classifyYAMLError converts a yaml.v3 parse error into an ErrSyntax located at
+// the line yaml.v3 names. yaml.v3 reports no column, and for parser errors the
+// line can be where the enclosing construct starts, so the origin carries the
+// line only and never a guessed column. Duplicate keys never reach here: yaml.v3
+// accepts them when decoding into a yaml.Node, and convertMappingNode rejects
+// them with exact positions.
+func classifyYAMLError(source string, via []ashlar.SourceSpan, err error) error {
 	return ashlar.NewError(
 		ashlar.ErrSyntax,
 		ashlar.RootPointer,
-		classifyYAMLOrigin(source, raw, via, err),
-		msg,
+		classifyYAMLOrigin(source, via, err),
+		err.Error(),
 		err,
 	)
 }
 
-func classifyYAMLOrigin(source string, raw []byte, via []ashlar.SourceSpan, err error) ashlar.Origin {
-	pos := ashlar.SourcePos{Line: 1, Column: 1}
+// classifyYAMLOrigin returns a line-only origin for the "line N:" prefix that
+// yaml.v3 writes into its error text (it exposes no structured position), or
+// the bare source when the text names no line.
+func classifyYAMLOrigin(source string, via []ashlar.SourceSpan, err error) ashlar.Origin {
+	var pos ashlar.SourcePos
 	if m := reYAMLLine.FindStringSubmatch(err.Error()); len(m) == 2 {
 		if line, convErr := strconv.Atoi(m[1]); convErr == nil && line > 0 {
-			pos = ashlar.SourcePos{Line: line, Column: firstNonSpaceColumn(raw, line)}
+			pos = ashlar.SourcePos{Line: line}
 		}
 	}
 	return ashlar.FileOrigin(ashlar.SourceSpan{Source: source, Start: pos}, via...)
-}
-
-func findKeyColumnOnLine(raw []byte, line int, key string) int {
-	lines := bytes.Split(raw, []byte{'\n'})
-	if line < 1 || line > len(lines) {
-		return 1
-	}
-	lineStr := string(lines[line-1])
-	if idx := strings.Index(lineStr, key); idx >= 0 {
-		return idx + 1
-	}
-	return firstNonSpaceColumn(raw, line)
-}
-
-func firstNonSpaceColumn(raw []byte, line int) int {
-	lines := bytes.Split(raw, []byte{'\n'})
-	if line < 1 || line > len(lines) {
-		return 1
-	}
-	for i, b := range lines[line-1] {
-		if b != ' ' && b != '\t' {
-			return i + 1
-		}
-	}
-	return 1
 }
 
 func convertDocumentNode(source string, via []ashlar.SourceSpan, doc *yaml.Node) (ashlar.Value, error) {

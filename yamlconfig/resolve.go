@@ -290,10 +290,16 @@ func verifyRequiredPointers(root ashlar.Value, required []ashlar.Pointer) error 
 	for _, ptr := range required {
 		v := root.At(ptr)
 		if v.IsOmitted() || v.IsNull() {
+			// An explicit null has its own origin. An omitted value has no
+			// node, so it is reported at the document root.
+			orig := root.Provenance().Effective
+			if v.IsNull() {
+				orig = v.Provenance().Effective
+			}
 			return ashlar.NewError(
 				ashlar.ErrUnresolved,
 				ptr,
-				root.Provenance().Effective,
+				orig,
 				fmt.Sprintf("required configuration value at %q is missing or null", ptr),
 				nil,
 			)

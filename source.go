@@ -17,24 +17,30 @@ const (
 )
 
 // SourcePos identifies a 1-based line and column coordinate and a 0-based byte
-// offset within a source document.
+// offset within a source document. A Column of 0 means only the line is known.
 type SourcePos struct {
 	Line   int
 	Column int
 	Offset int64
 }
 
-// Valid reports whether p holds a positive 1-based line and column coordinate.
+// Valid reports whether p holds a positive 1-based line, and a column that is
+// either positive or 0 (unknown).
 func (p SourcePos) Valid() bool {
-	return p.Line > 0 && p.Column > 0
+	return p.Line > 0 && p.Column >= 0
 }
 
-// String formats p as "line:column" when valid, or "" otherwise.
+// String formats p as "line:column" when valid, "line" when only the line is
+// known, or "" otherwise.
 func (p SourcePos) String() string {
-	if !p.Valid() {
+	switch {
+	case !p.Valid():
 		return ""
+	case p.Column == 0:
+		return fmt.Sprintf("%d", p.Line)
+	default:
+		return fmt.Sprintf("%d:%d", p.Line, p.Column)
 	}
-	return fmt.Sprintf("%d:%d", p.Line, p.Column)
 }
 
 // SourceSpan identifies a contiguous range within a named source document.
@@ -50,12 +56,12 @@ func (s SourceSpan) Valid() bool {
 }
 
 // String formats the span's starting coordinate as "file:line:column" when both
-// source and position are present, "file" when only source is present, or
-// "line:column" when only position is present.
+// source and position are present ("file:line" when the column is unknown),
+// "file" when only source is present, or the position alone otherwise.
 func (s SourceSpan) String() string {
 	switch {
 	case s.Source != "" && s.Start.Valid():
-		return fmt.Sprintf("%s:%d:%d", s.Source, s.Start.Line, s.Start.Column)
+		return s.Source + ":" + s.Start.String()
 	case s.Source != "":
 		return s.Source
 	case s.Start.Valid():
