@@ -518,3 +518,35 @@ func TestYAMLScalarSyntaxErrorWithholdsValue(t *testing.T) {
 		})
 	}
 }
+
+// TestYAMLNumberMismatchMessages checks that a number that does not fit its
+// target names the reason with a fixed message and never quotes the number.
+func TestYAMLNumberMismatchMessages(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		doc    string
+		newDst func() any
+		want   string
+	}{
+		{"value: 300\n", newNumberField[int8](), "number out of range for int8"},
+		{"value: 1.5\n", newNumberField[int](), "number requires integer notation for int"},
+		{"value: 1.0\n", newNumberField[int64](), "number requires integer notation for int64"},
+		{"value: -7\n", newNumberField[uint16](), "negative sign is not allowed for uint16"},
+		{"value: 70000\n", newNumberField[uint16](), "number out of range for uint16"},
+		{"value: 1e40\n", newNumberField[float32](), "number out of range for float32"},
+		{"value: 1e400\n", newNumberField[float64](), "number out of range for float64"},
+		{"value: \"7\"\n", newNumberField[int](), "expected int, got string"},
+	}
+	for _, tc := range cases {
+		for _, ep := range decodeEntryPoints {
+			t.Run(ep.name+"/"+strings.TrimSpace(tc.doc), func(t *testing.T) {
+				t.Parallel()
+				dir := writeYAMLFile(t, "config.yaml", tc.doc)
+				err := ep.decode(t, dir, "config.yaml", tc.newDst())
+				if msg := requirePointerError(t, err, ashlar.ErrValidation, "/value", "config.yaml:1:8"); msg != tc.want {
+					t.Errorf("Message = %q, want %q", msg, tc.want)
+				}
+			})
+		}
+	}
+}

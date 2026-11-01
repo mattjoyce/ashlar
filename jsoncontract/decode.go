@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mattjoyce/ashlar"
+	"github.com/mattjoyce/ashlar/internal/numfit"
 )
 
 var (
@@ -233,20 +234,15 @@ func checkScalarType(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error
 		if val.Kind() != ashlar.KindBool {
 			return typeMismatchError(val, ptr, t)
 		}
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		i, err := val.Int64()
-		if err != nil || reflect.Zero(t).OverflowInt(i) {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64:
+		lex, ok := val.NumberLexeme()
+		if !ok {
 			return typeMismatchError(val, ptr, t)
 		}
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		u, err := val.Uint64()
-		if err != nil || reflect.Zero(t).OverflowUint(u) {
-			return typeMismatchError(val, ptr, t)
-		}
-	case reflect.Float32, reflect.Float64:
-		f, err := val.Float64()
-		if err != nil || reflect.Zero(t).OverflowFloat(f) {
-			return typeMismatchError(val, ptr, t)
+		if msg := numfit.Problem(string(lex), t); msg != "" {
+			return ashlar.NewError(ashlar.ErrValidation, ptr, val.Provenance().Effective, msg, nil)
 		}
 	}
 	return nil

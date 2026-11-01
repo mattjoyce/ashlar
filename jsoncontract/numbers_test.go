@@ -336,3 +336,34 @@ func TestDecodeStrictAnyKeepsNumberLexemes(t *testing.T) {
 		})
 	}
 }
+
+// TestDecodeStrictNumberMismatchMessages checks that jsoncontract reports a
+// number that does not fit its target with the same fixed messages as
+// yamlconfig, located at the value, without quoting the number.
+func TestDecodeStrictNumberMismatchMessages(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		lit    string
+		newDst func() any
+		want   string
+	}{
+		{"300", newJSONNumberField[int8](), "number out of range for int8"},
+		{"1.5", newJSONNumberField[int](), "number requires integer notation for int"},
+		{"1e0", newJSONNumberField[int64](), "number requires integer notation for int64"},
+		{"-7", newJSONNumberField[uint16](), "negative sign is not allowed for uint16"},
+		{"70000", newJSONNumberField[uint16](), "number out of range for uint16"},
+		{"1e40", newJSONNumberField[float32](), "number out of range for float32"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.lit, func(t *testing.T) {
+			t.Parallel()
+			doc, _ := readJSONNumberDoc(t, tc.lit)
+			err := doc.DecodeStrict(tc.newDst())
+			requireJSONLocatedError(t, err, ashlar.ErrValidation, "/value", "config.json:2:12")
+			var ae *ashlar.Error
+			if errors.As(err, &ae) && ae.Message != tc.want {
+				t.Errorf("Message = %q, want %q", ae.Message, tc.want)
+			}
+		})
+	}
+}

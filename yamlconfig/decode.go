@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mattjoyce/ashlar"
+	"github.com/mattjoyce/ashlar/internal/numfit"
 )
 
 var (
@@ -261,30 +262,48 @@ func (dc decoder) decodeScalar(val ashlar.Value, ptr ashlar.Pointer, dst reflect
 		}
 		dst.SetBool(b)
 		return nil
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		i, err := val.Int64()
-		if err != nil || dst.OverflowInt(i) {
-			return dc.validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
-		}
-		dst.SetInt(i)
-		return nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		u, err := val.Uint64()
-		if err != nil || dst.OverflowUint(u) {
-			return dc.validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
-		}
-		dst.SetUint(u)
-		return nil
-	case reflect.Float32, reflect.Float64:
-		f, err := val.Float64()
-		if err != nil || dst.OverflowFloat(f) {
-			return dc.validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
-		}
-		dst.SetFloat(f)
-		return nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return dc.decodeNumber(val, ptr, dst)
 	default:
 		return dc.validationErr(val, ptr, fmt.Sprintf("unsupported scalar type %s", dst.Type()), nil)
 	}
+}
+
+// decodeNumber stores a number in an integer, unsigned or float target. A
+// number that does not fit gets one of numfit's fixed messages, which say
+// whether it needs integer notation, has a disallowed sign, or is out of range.
+func (dc decoder) decodeNumber(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
+	lex, ok := val.NumberLexeme()
+	if !ok {
+		return dc.validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
+	}
+	if msg := numfit.Problem(string(lex), dst.Type()); msg != "" {
+		return dc.validationErr(val, ptr, msg, nil)
+	}
+	// numfit has confirmed the number parses and fits, so these cannot fail.
+	switch dst.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		i, err := val.Int64()
+		if err != nil {
+			return dc.validationErr(val, ptr, fmt.Sprintf("expected %s, got number", dst.Type()), nil)
+		}
+		dst.SetInt(i)
+	case reflect.Float32, reflect.Float64:
+		f, err := val.Float64()
+		if err != nil {
+			return dc.validationErr(val, ptr, fmt.Sprintf("expected %s, got number", dst.Type()), nil)
+		}
+		dst.SetFloat(f)
+	default:
+		u, err := val.Uint64()
+		if err != nil {
+			return dc.validationErr(val, ptr, fmt.Sprintf("expected %s, got number", dst.Type()), nil)
+		}
+		dst.SetUint(u)
+	}
+	return nil
 }
 
 func indexStructFields(t reflect.Type) map[string][]int {
