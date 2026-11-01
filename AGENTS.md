@@ -17,7 +17,7 @@ Every design proposal, API boundary, and code review runs through **Hickey × Ar
 - **Armstrong (Runtime — Fail Fast, Fail Closed):**
   - **Reject pieces that do not fit.** Duplicate keys, trailing tokens, unknown fields in closed structures, include cycles, and unresolved required values fail loudly with source-located errors (`file:line:column`). A required value that no layer set has no source, so its error carries the JSON Pointer and no location rather than a guessed one.
   - **All-or-nothing resolution.** A broken fragment or invalid override produces no partial configuration.
-  - **Never leak secrets.** Diagnostics, provenance explanations, and error messages must redact sensitive values and never echo raw secret material.
+  - **Never leak secrets.** Diagnostics, provenance explanations, and error messages must redact every value classified as sensitive, by the caller's `Redactor` or `DefaultRedactor`. Deciding what is sensitive is the caller's policy. Decode errors otherwise follow Go convention and may quote the offending value, as `strconv` and `time` errors do. Load-time errors run before any caller policy applies, so they quote no document content.
 
 ---
 
