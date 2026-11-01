@@ -61,33 +61,22 @@ func (d Document) DecodeStrict(dst any) error {
 	if err := checkKnownFields(d.root, ashlar.RootPointer, elemType, false); err != nil {
 		return err
 	}
-	// Second pass: locate value-type errors. A located error is only
-	// authoritative when the same bytes also fail to decode with encoding/json
-	// under the same settings; otherwise the pre-check was wrong and is
-	// discarded.
-	if err := checkKnownFields(d.root, ashlar.RootPointer, elemType, true); err != nil {
-		if confirmDecodeError(d.raw, elemType) != nil {
-			return err
-		}
-	}
-
+	// Decode once, into the caller's destination, so custom unmarshalers see
+	// the existing value and run exactly once. encoding/json alone decides
+	// success.
 	dec := json.NewDecoder(bytes.NewReader(d.raw))
 	dec.DisallowUnknownFields()
 	dec.UseNumber()
-	if err := dec.Decode(dst); err != nil {
-		return d.classifyDecodeError(err)
+	err := dec.Decode(dst)
+	if err == nil {
+		return nil
 	}
-	return nil
-}
-
-// confirmDecodeError reports whether encoding/json (with DisallowUnknownFields
-// and UseNumber, the same settings DecodeStrict applies) rejects raw when
-// decoded into a fresh value of type t.
-func confirmDecodeError(raw []byte, t reflect.Type) error {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	dec.UseNumber()
-	return dec.Decode(reflect.New(t).Interface())
+	// Second pass, only after a real failure: locate a value-type error that
+	// encoding/json reported without a usable position.
+	if located := checkKnownFields(d.root, ashlar.RootPointer, elemType, true); located != nil {
+		return located
+	}
+	return d.classifyDecodeError(err)
 }
 
 // withheldDecodeError wraps an error from encoding/json or a custom
@@ -102,7 +91,14 @@ func (e withheldDecodeError) Unwrap() error { return e.err }
 func (d Document) classifyDecodeError(err error) error {
 	var typeErr *json.UnmarshalTypeError
 	if errors.As(err, &typeErr) {
+		// A custom unmarshaler can build this error itself, so Field and
+		// Value are caller-controlled text. The pointer is used only when it
+		// names a node in the document, and the kind only when it is a known
+		// JSON kind word.
 		ptr := pointerFromDotField(typeErr.Field)
+		if v := d.root.At(ptr); !v.IsPresent() && !v.IsNull() {
+			ptr = ashlar.RootPointer
+		}
 		orig := d.originAt(ptr)
 		return ashlar.NewError(
 			ashlar.ErrValidation,
@@ -124,15 +120,18 @@ func (d Document) classifyDecodeError(err error) error {
 	)
 }
 
-// kindFromTypeValue returns the JSON kind word for a *json.UnmarshalTypeError
-// Value string: the first space-separated word ("number 123" → "number",
-// "string" → "string"), or "value" when Value is empty.
+// kindFromTypeValue returns the JSON kind word that starts a
+// *json.UnmarshalTypeError Value ("number 123" gives "number"), or "value"
+// when the first word is not a known kind. Value can come from a custom
+// unmarshaler and quote input, so nothing outside the fixed list is returned.
 func kindFromTypeValue(value string) string {
 	kind, _, _ := strings.Cut(value, " ")
-	if kind == "" {
+	switch kind {
+	case "string", "number", "bool", "array", "object", "null":
+		return kind
+	default:
 		return "value"
 	}
-	return kind
 }
 
 func (d Document) originAt(ptr ashlar.Pointer) ashlar.Origin {
@@ -175,7 +174,12 @@ func checkKnownFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type, type
 			return typeMismatchError(val, ptr, t)
 		}
 		elemType := t.Elem()
-		for i, elem := range val.Elements() {
+		elems := val.Elements()
+		if t.Kind() == reflect.Array && len(elems) > t.Len() {
+			// encoding/json ignores elements past a fixed array's length.
+			elems = elems[:t.Len()]
+		}
+		for i, elem := range elems {
 			if err := checkKnownFields(elem, ptr.Index(i), elemType, types); err != nil {
 				return err
 			}

@@ -25,6 +25,8 @@ func TestReadSyntaxErrorsWithholdTokenContent(t *testing.T) {
 	}{
 		{"trailing_string", `{} "` + secret + `"`, ashlar.ErrTrailingContent, "contract.json:1:4"},
 		{"string_where_colon_expected", `{"a" "` + secret + `"}`, ashlar.ErrSyntax, "contract.json:1:6"},
+		{"bare_word_value", `{"v":` + secret + `}`, ashlar.ErrSyntax, "contract.json:1:6"},
+		{"bad_escape", `{"v":"\` + secret + `"}`, ashlar.ErrSyntax, "contract.json:1:6"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,7 +1,6 @@
 package yamlconfig
 
 import (
-	"fmt"
 	"os"
 	"regexp"
 	"sort"
@@ -141,7 +140,9 @@ func interpolateSingleString(
 				ashlar.ErrUnresolved,
 				ptr,
 				val.Provenance().Effective,
-				fmt.Sprintf("unresolved environment variable %q in ${%s}", varName, varName),
+				// The variable name comes from the document, so it is not
+				// quoted; the pointer and origin locate the reference.
+				"unresolved environment variable in ${...} interpolation",
 				nil,
 			)
 		}

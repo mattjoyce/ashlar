@@ -2,12 +2,14 @@ package yamlconfig_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/mattjoyce/ashlar"
 	"github.com/mattjoyce/ashlar/yamlconfig"
 )
 
@@ -46,6 +48,8 @@ func TestLoadErrorsWithholdDocumentContent(t *testing.T) {
 		{"unknown_anchor_in_trailing_document", map[string]string{"root.yaml": "a: 1\n---\nb: *" + loadSecret + "\n"}},
 		{"escaping_include", map[string]string{"root.yaml": "include: ../" + loadSecret + "\n"}},
 		{"missing_include", map[string]string{"root.yaml": "include: " + loadSecret + ".yaml\n"}},
+		{"non_string_key", map[string]string{"root.yaml": "!!bool " + loadSecret + ": value\n"}},
+		{"custom_tag_on_key", map[string]string{"root.yaml": "!" + loadSecret + " name: value\n"}},
 	}
 	for _, tc := range yamlCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -60,6 +64,31 @@ func TestLoadErrorsWithholdDocumentContent(t *testing.T) {
 			assertWithheld(t, err)
 		})
 	}
+
+	t.Run("unresolved_interpolation", func(t *testing.T) {
+		t.Parallel()
+		// ${...} names are identifiers, so this case plants its own secret.
+		const varSecret = "sekrit123"
+		dir := t.TempDir()
+		doc := "password: '${" + varSecret + "}'\n"
+		if err := os.WriteFile(filepath.Join(dir, "root.yaml"), []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := yamlconfig.Resolve(context.Background(), os.DirFS(dir), "root.yaml", yamlconfig.ResolveOptions{
+			Env: yamlconfig.EnvBinding{
+				InterpolateScalar: true,
+				Lookup:            func(string) (string, bool) { return "", false },
+			},
+		})
+		if !errors.Is(err, ashlar.ErrUnresolved) {
+			t.Fatalf("Resolve() error = %v, want ErrUnresolved", err)
+		}
+		for _, format := range []string{"%v", "%+v", "%#v", "%q"} {
+			if got := fmt.Sprintf(format, err); strings.Contains(got, varSecret) {
+				t.Errorf("format %q shows %q: %s", format, varSecret, got)
+			}
+		}
+	})
 
 	t.Run("dotenv_malformed_name", func(t *testing.T) {
 		t.Parallel()

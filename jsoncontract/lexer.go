@@ -164,7 +164,7 @@ func (l *lexer) next(ptr ashlar.Pointer) (token, error) {
 			return l.scanNumber(start, ptr)
 		}
 		l.advanceByte()
-		return token{}, l.syntaxError(l.spanFrom(start), ptr, fmt.Sprintf("unexpected character %q", b))
+		return token{}, l.syntaxError(l.spanFrom(start), ptr, "unexpected character")
 	}
 }
 
@@ -197,7 +197,7 @@ func (l *lexer) scanString(start ashlar.SourcePos, ptr ashlar.Pointer) (token, e
 			}
 			var decoded string
 			if err := json.Unmarshal(rawBytes, &decoded); err != nil {
-				return token{}, l.syntaxError(l.spanFrom(start), ptr, fmt.Sprintf("invalid string escape: %v", err))
+				return token{}, l.syntaxError(l.spanFrom(start), ptr, "invalid string escape")
 			}
 			return token{
 				kind: tokString,
