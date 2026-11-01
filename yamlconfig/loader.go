@@ -306,24 +306,14 @@ func convertYAMLInt(ptr ashlar.Pointer, n *yaml.Node, prov ashlar.Provenance) (a
 	if err := n.Decode(&u64); err == nil {
 		return ashlar.NumberValue(strconv.FormatUint(u64, 10), prov)
 	}
-	return ashlar.Value{}, scalarSyntaxErr(ptr, prov, "invalid YAML integer %q", n.Value)
+	return ashlar.Value{}, scalarSyntaxErr(ptr, prov, "invalid YAML integer")
 }
 
-// scalarSyntaxErr builds a located ErrSyntax whose message quotes the scalar's
-// source spelling. The spelling is scrubbed when DefaultRedactor classifies
-// ptr as sensitive; the loader has no caller policy yet, so the default rules
-// stand in.
-func scalarSyntaxErr(ptr ashlar.Pointer, prov ashlar.Provenance, format, raw string) error {
-	return ashlar.NewRedactedError(
-		ashlar.ErrSyntax,
-		ptr,
-		prov.Effective,
-		fmt.Sprintf(format, raw),
-		nil,
-		nil,
-		raw,
-		prov.Sensitive,
-	)
+// scalarSyntaxErr builds a located ErrSyntax for a scalar that failed
+// conversion. The message never quotes the scalar: the loader runs before any
+// caller redaction policy applies, so it cannot tell which values are secret.
+func scalarSyntaxErr(ptr ashlar.Pointer, prov ashlar.Provenance, msg string) error {
+	return ashlar.NewError(ashlar.ErrSyntax, ptr, prov.Effective, msg, nil)
 }
 
 func convertYAMLFloat(ptr ashlar.Pointer, n *yaml.Node, prov ashlar.Provenance) (ashlar.Value, error) {
@@ -333,11 +323,11 @@ func convertYAMLFloat(ptr ashlar.Pointer, n *yaml.Node, prov ashlar.Provenance) 
 	}
 	var f64 float64
 	if err := n.Decode(&f64); err != nil {
-		return ashlar.Value{}, scalarSyntaxErr(ptr, prov, "invalid YAML float %q", n.Value)
+		return ashlar.Value{}, scalarSyntaxErr(ptr, prov, "invalid YAML float")
 	}
 	// Ashlar numbers are JSON numbers, which cannot be infinite or NaN.
 	if math.IsInf(f64, 0) || math.IsNaN(f64) {
-		return ashlar.Value{}, scalarSyntaxErr(ptr, prov, "YAML float %q is infinite or NaN, which Ashlar numbers cannot represent", n.Value)
+		return ashlar.Value{}, scalarSyntaxErr(ptr, prov, "YAML float is infinite or NaN, which Ashlar numbers cannot represent")
 	}
 	return ashlar.NumberValue(strconv.FormatFloat(f64, 'g', -1, 64), prov)
 }

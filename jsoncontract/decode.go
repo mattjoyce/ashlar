@@ -285,26 +285,38 @@ func checkStructFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type, typ
 }
 
 // checkQuotedContent reports a located ErrValidation when val, the JSON string
-// held by a ,string field of type t, does not contain a JSON literal that
-// decodes into t. encoding/json rejects surrounding whitespace in the quoted
-// literal, so this check does too. A null val passes. The message names only
-// the Go type, never the content, which may be secret.
+// held by a ,string field of type t, is content encoding/json rejects for that
+// field. It decodes the string through a one-field struct carrying the same
+// type and ",string" tag, so the check uses encoding/json's own rules for
+// quoted content, such as accepting "01" for an int. A null val passes. The
+// message names only the Go type, never the content, which may be secret.
 func checkQuotedContent(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error {
 	s, ok := val.StringVal()
 	if !ok {
 		return nil
 	}
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
+	quoted, err := json.Marshal(s)
+	if err != nil {
+		return nil // A Go string always marshals; nothing to locate.
 	}
-	if strings.TrimSpace(s) == s && json.Unmarshal([]byte(s), reflect.New(t).Interface()) == nil {
+	wrapper := reflect.StructOf([]reflect.StructField{{
+		Name: "V",
+		Type: t,
+		Tag:  `json:"v,string"`,
+	}})
+	raw := append(append([]byte(`{"v":`), quoted...), '}')
+	if json.Unmarshal(raw, reflect.New(wrapper).Interface()) == nil {
 		return nil
+	}
+	base := t
+	for base.Kind() == reflect.Pointer {
+		base = base.Elem()
 	}
 	return ashlar.NewError(
 		ashlar.ErrValidation,
 		ptr,
 		val.Provenance().Effective,
-		fmt.Sprintf("invalid ,string literal for Go type %s", t),
+		fmt.Sprintf("invalid ,string literal for Go type %s", base),
 		nil,
 	)
 }

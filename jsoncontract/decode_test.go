@@ -71,6 +71,10 @@ func TestDecodeStrictMatchesEncodingJSON(t *testing.T) {
 	type quotedString struct {
 		Name string `json:"name,string"`
 	}
+	type quotedAndPlain struct {
+		A int `json:"a,string"`
+		B int `json:"b"`
+	}
 	type intKeys struct {
 		Inner struct {
 			Ports map[int]string `json:"ports"`
@@ -147,6 +151,7 @@ func TestDecodeStrictMatchesEncodingJSON(t *testing.T) {
 		acceptRow{desc: "quoted pointer null literal", json: `{"port":"null"}`, newDst: func() any { return new(quotedPtrInt) }},
 		acceptRow{desc: "quoted string literal", json: `{"name":"\"x\""}`, newDst: func() any { return new(quotedString) }},
 		acceptRow{desc: "quoted pointer int", json: `{"port":"8080"}`, newDst: func() any { return new(quotedPtrInt) }},
+		acceptRow{desc: "quoted int with leading zero", json: `{"a":"01","b":2}`, newDst: func() any { return new(quotedAndPlain) }},
 		acceptRow{desc: "int map keys", json: `{"inner":{"ports":{"80":"http"}}}`, newDst: func() any { return new(intKeys) }},
 	)
 
@@ -206,6 +211,13 @@ func TestDecodeStrictMatchesEncodingJSON(t *testing.T) {
 			newDst:  func() any { return new(quotedString) },
 			kind:    ashlar.ErrValidation,
 			pointer: "/name",
+		},
+		{
+			desc:    "valid quoted leading zero beside a bad field",
+			json:    `{"a":"01","b":"bad"}`,
+			newDst:  func() any { return new(quotedAndPlain) },
+			kind:    ashlar.ErrValidation,
+			pointer: "/b",
 		},
 		{
 			desc:    "non-integer map key",

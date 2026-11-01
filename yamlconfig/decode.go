@@ -323,8 +323,11 @@ func fieldByIndexPath(v reflect.Value, path []int) reflect.Value {
 	return cur
 }
 
-// valueToGoAny converts val to plain Go values. Numbers become int64, uint64
-// or float64, or json.Number holding the exact lexeme when exactNumbers is set.
+// valueToGoAny converts val to plain Go values. A number becomes int64 or
+// uint64 when it is an integer that fits, otherwise float64 when it is finite
+// in that range. A number neither can hold, such as 1e400 or an integer past
+// uint64, becomes json.Number with its exact lexeme rather than losing its
+// value. With exactNumbers set, every number becomes json.Number.
 func valueToGoAny(val ashlar.Value, exactNumbers bool) any {
 	switch val.Kind() {
 	case ashlar.KindNull:
@@ -333,7 +336,8 @@ func valueToGoAny(val ashlar.Value, exactNumbers bool) any {
 		b, _ := val.Bool()
 		return b
 	case ashlar.KindNumber:
-		if lex, ok := val.NumberLexeme(); ok && exactNumbers {
+		lex, _ := val.NumberLexeme()
+		if exactNumbers {
 			return json.Number(lex)
 		}
 		if i, err := val.Int64(); err == nil {
@@ -342,8 +346,14 @@ func valueToGoAny(val ashlar.Value, exactNumbers bool) any {
 		if u, err := val.Uint64(); err == nil {
 			return u
 		}
-		f, _ := val.Float64()
-		return f
+		if !strings.ContainsAny(string(lex), ".eE") {
+			// An integer past uint64: float64 would round it.
+			return json.Number(lex)
+		}
+		if f, err := val.Float64(); err == nil {
+			return f
+		}
+		return json.Number(lex)
 	case ashlar.KindString:
 		s, _ := val.StringVal()
 		return s
