@@ -112,19 +112,9 @@ func (d Document) classifyDecodeError(err error) error {
 			withheldDecodeError{err},
 		)
 	}
-	msg := err.Error()
-	if strings.HasPrefix(msg, "json: unknown field ") {
-		field := strings.TrimPrefix(msg, "json: unknown field ")
-		field = strings.Trim(field, `"`)
-		ptr := ashlar.NewPointer(field)
-		return ashlar.NewError(
-			ashlar.ErrUnknownField,
-			ptr,
-			d.originAt(ptr),
-			fmt.Sprintf("unknown field %q", field),
-			withheldDecodeError{err},
-		)
-	}
+	// Unknown fields never reach this point: checkKnownFields rejects them
+	// with located ErrUnknownField errors before encoding/json runs, so this
+	// function does not inspect encoding/json error text.
 	return ashlar.NewError(
 		ashlar.ErrValidation,
 		ashlar.RootPointer,
@@ -277,10 +267,14 @@ func checkStructFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type, typ
 				nil,
 			)
 		}
-		// A field tagged with the ,string option accepts a JSON string (or
-		// null) without further value-type checks; the standard decoder
-		// validates the quoted literal.
+		// A field tagged with the ,string option accepts JSON null, or a JSON
+		// string whose content is itself a JSON literal of the field's type.
+		// The content check locates bad literals that encoding/json reports
+		// without a field name.
 		if field.quoted && types && (m.Value.Kind() == ashlar.KindString || m.Value.IsNull()) {
+			if err := checkQuotedContent(m.Value, ptr.Child(m.Key), field.typ); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := checkKnownFields(m.Value, ptr.Child(m.Key), field.typ, types); err != nil {
@@ -288,6 +282,31 @@ func checkStructFields(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type, typ
 		}
 	}
 	return nil
+}
+
+// checkQuotedContent reports a located ErrValidation when val, the JSON string
+// held by a ,string field of type t, does not contain a JSON literal that
+// decodes into t. encoding/json rejects surrounding whitespace in the quoted
+// literal, so this check does too. A null val passes. The message names only
+// the Go type, never the content, which may be secret.
+func checkQuotedContent(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error {
+	s, ok := val.StringVal()
+	if !ok {
+		return nil
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if strings.TrimSpace(s) == s && json.Unmarshal([]byte(s), reflect.New(t).Interface()) == nil {
+		return nil
+	}
+	return ashlar.NewError(
+		ashlar.ErrValidation,
+		ptr,
+		val.Provenance().Effective,
+		fmt.Sprintf("invalid ,string literal for Go type %s", t),
+		nil,
+	)
 }
 
 func collectStructJSONFields(t reflect.Type) map[string]jsonField {

@@ -68,6 +68,14 @@ func TestDecodeStrictMatchesEncodingJSON(t *testing.T) {
 	type quotedBool struct {
 		On bool `json:"on,string"`
 	}
+	type quotedString struct {
+		Name string `json:"name,string"`
+	}
+	type intKeys struct {
+		Inner struct {
+			Ports map[int]string `json:"ports"`
+		} `json:"inner"`
+	}
 	type byteSlice struct {
 		Data []byte `json:"data"`
 	}
@@ -134,6 +142,14 @@ func TestDecodeStrictMatchesEncodingJSON(t *testing.T) {
 		},
 	}
 
+	accept = append(accept,
+		acceptRow{desc: "quoted null literal", json: `{"port":"null"}`, newDst: func() any { return new(quotedInt) }},
+		acceptRow{desc: "quoted pointer null literal", json: `{"port":"null"}`, newDst: func() any { return new(quotedPtrInt) }},
+		acceptRow{desc: "quoted string literal", json: `{"name":"\"x\""}`, newDst: func() any { return new(quotedString) }},
+		acceptRow{desc: "quoted pointer int", json: `{"port":"8080"}`, newDst: func() any { return new(quotedPtrInt) }},
+		acceptRow{desc: "int map keys", json: `{"inner":{"ports":{"80":"http"}}}`, newDst: func() any { return new(intKeys) }},
+	)
+
 	reject := []rejectRow{
 		{
 			desc:    "quoted bad content",
@@ -141,6 +157,62 @@ func TestDecodeStrictMatchesEncodingJSON(t *testing.T) {
 			newDst:  func() any { return new(quotedInt) },
 			kind:    ashlar.ErrValidation,
 			pointer: "/port",
+		},
+		{
+			desc:    "quoted leading space",
+			json:    `{"port":" 5"}`,
+			newDst:  func() any { return new(quotedInt) },
+			kind:    ashlar.ErrValidation,
+			pointer: "/port",
+		},
+		{
+			desc:    "quoted trailing space",
+			json:    `{"port":"5 "}`,
+			newDst:  func() any { return new(quotedInt) },
+			kind:    ashlar.ErrValidation,
+			pointer: "/port",
+		},
+		{
+			desc:    "quoted fraction into int",
+			json:    `{"port":"1.5"}`,
+			newDst:  func() any { return new(quotedInt) },
+			kind:    ashlar.ErrValidation,
+			pointer: "/port",
+		},
+		{
+			desc:    "quoted nested string into int",
+			json:    `{"port":"\"5\""}`,
+			newDst:  func() any { return new(quotedInt) },
+			kind:    ashlar.ErrValidation,
+			pointer: "/port",
+		},
+		{
+			desc:    "quoted bad pointer content",
+			json:    `{"port":"x"}`,
+			newDst:  func() any { return new(quotedPtrInt) },
+			kind:    ashlar.ErrValidation,
+			pointer: "/port",
+		},
+		{
+			desc:    "quoted bool from digit",
+			json:    `{"on":"1"}`,
+			newDst:  func() any { return new(quotedBool) },
+			kind:    ashlar.ErrValidation,
+			pointer: "/on",
+		},
+		{
+			desc:    "quoted string without inner quotes",
+			json:    `{"name":"x"}`,
+			newDst:  func() any { return new(quotedString) },
+			kind:    ashlar.ErrValidation,
+			pointer: "/name",
+		},
+		{
+			desc:    "non-integer map key",
+			json:    `{"inner":{"ports":{"abc":"x"}}}`,
+			newDst:  func() any { return new(intKeys) },
+			kind:    ashlar.ErrValidation,
+			pointer: "/inner/ports",
 		},
 		{
 			desc:    "byte array from string",
@@ -264,6 +336,11 @@ func TestDecodeStrictErrorsWithholdInput(t *testing.T) {
 	type overflowInt struct {
 		Pin int8 `json:"pin"`
 	}
+	type intKeys struct {
+		Inner struct {
+			Ports map[int]string `json:"ports"`
+		} `json:"inner"`
+	}
 
 	rows := []struct {
 		desc   string
@@ -293,6 +370,12 @@ func TestDecodeStrictErrorsWithholdInput(t *testing.T) {
 			leak:   "pin-sekrit-3",
 		},
 		{
+			desc:   "non-integer map key",
+			json:   `{"inner":{"ports":{"key-sekrit-4":"x"}}}`,
+			newDst: func() any { return new(intKeys) },
+			leak:   "key-sekrit-4",
+		},
+		{
 			desc:   "number overflow",
 			json:   `{"pin":123456789012}`,
 			newDst: func() any { return new(overflowInt) },
@@ -319,6 +402,71 @@ func TestDecodeStrictErrorsWithholdInput(t *testing.T) {
 				if got := fmt.Sprintf(format, err); strings.Contains(got, row.leak) {
 					t.Errorf("format %q leaks %q: %s", format, row.leak, got)
 				}
+			}
+		})
+	}
+}
+
+// TestDecodeStrictLocatesErrors checks the reported file:line:column for the
+// two error paths that do not come from the value-type pre-check: a bad
+// ,string literal and an encoding/json UnmarshalTypeError (a map key that is
+// not an integer).
+func TestDecodeStrictLocatesErrors(t *testing.T) {
+	t.Parallel()
+
+	type quoted struct {
+		Port int `json:"port,string"`
+	}
+	type intKeys struct {
+		Inner struct {
+			Ports map[int]string `json:"ports"`
+		} `json:"inner"`
+	}
+
+	rows := []struct {
+		desc     string
+		json     string
+		newDst   func() any
+		pointer  string
+		location string
+	}{
+		{
+			desc:     "bad quoted literal",
+			json:     "{\n  \"port\": \"abc\"\n}",
+			newDst:   func() any { return new(quoted) },
+			pointer:  "/port",
+			location: "contract.json:2:11",
+		},
+		{
+			desc:     "decoder type error",
+			json:     "{\n  \"inner\": {\n    \"ports\": {\"abc\": \"x\"}\n  }\n}",
+			newDst:   func() any { return new(intKeys) },
+			pointer:  "/inner/ports",
+			location: "contract.json:3:14",
+		},
+	}
+
+	for _, row := range rows {
+		row := row
+		t.Run(row.desc, func(t *testing.T) {
+			t.Parallel()
+			doc, err := jsoncontract.Read("contract.json", []byte(row.json))
+			if err != nil {
+				t.Fatalf("Read() unexpected error: %v", err)
+			}
+			err = doc.DecodeStrict(row.newDst())
+			var aErr *ashlar.Error
+			if !errors.As(err, &aErr) {
+				t.Fatalf("DecodeStrict() error = %v, want *ashlar.Error", err)
+			}
+			if !errors.Is(err, ashlar.ErrValidation) {
+				t.Errorf("DecodeStrict() error = %v, want ErrValidation", err)
+			}
+			if got := aErr.Pointer.String(); got != row.pointer {
+				t.Errorf("Pointer = %q, want %q", got, row.pointer)
+			}
+			if got := aErr.Origin.Location(); got != row.location {
+				t.Errorf("Origin.Location() = %q, want %q", got, row.location)
 			}
 		})
 	}

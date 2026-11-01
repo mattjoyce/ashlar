@@ -1,6 +1,6 @@
 ---
 id: 2
-status: todo
+status: done
 priority: High
 blocked_by: []
 tags: [jsoncontract, tests, gate, errors]
@@ -40,9 +40,9 @@ so the match may be unavoidable, but it then needs a stated exception.
 
 ## Acceptance criteria
 
-- [ ] Record which Go version or `encoding/json` behavior the test was written
+- [x] Record which Go version or `encoding/json` behavior the test was written
       against (introduced at or before `97e7604`).
-- [ ] Decide which side is wrong:
+- [x] Decide which side is wrong:
       - The code is wrong if Ashlar promises a `/port` pointer for bad `,string`
         content. Then Ashlar must derive the pointer without parsing
         `encoding/json` error text. One option is to have Ashlar's own value
@@ -51,18 +51,36 @@ so the match may be unavoidable, but it then needs a stated exception.
       - The test is wrong if no such pointer is promised. Then change the
         expectation to the root pointer, and state that limitation in SPEC.md
         §3.2.
-- [ ] Either way, keep the decoder text withheld from the error. The
+- [x] Either way, keep the decoder text withheld from the error. The
       `pin-sekrit-3` leak case at `decode_test.go:290` stays green.
-- [ ] Add a test that reaches `*json.UnmarshalTypeError`, for example
+- [x] Add a test that reaches `*json.UnmarshalTypeError`, for example
       `{"port":"abc"}` into a plain `int` field. That covers
       `pointerFromDotField` and `originAt` and checks the reported pointer and
       `file:line:col`.
-- [ ] The unknown-field check either stops using string matching or gets a code
+- [x] The unknown-field check either stops using string matching or gets a code
       comment explaining why `encoding/json` leaves no alternative, with the
       exception noted in AGENTS.md or SPEC.md.
-- [ ] `scripts/gate.sh` exits 0.
+- [x] `scripts/gate.sh` exits 0.
 
 ## Narrative
 - 2026-11-01: Found while checking how thorough Ashlar's tests are before
   starting card 1. The failure is deterministic on Go 1.25.0. Card 3 (the test
   base) builds on a green suite, so this card comes first. (by @claude)
+- 2026-11-01: Resolved. The test never passed: it fails at `203377c`, where it
+  was added, and at `97e7604`. `encoding/json` reports bad `,string` content as
+  an untyped `*errors.errorString` with no field name, so the pointer could only
+  come from Ashlar. That made the code wrong, not the test, because the
+  `DecodeStrict` contract promises a location wherever the failing value can be
+  identified. The pre-check now validates the quoted literal itself:
+  `checkQuotedContent` decodes the string content into the field's type and
+  rejects surrounding whitespace, which `encoding/json` also rejects. The
+  existing confirmation step still discards any pre-check error that
+  `encoding/json` would not also raise, so this can't reject accepted input. The
+  message names only the Go type. The typed `UnmarshalTypeError` branch turned
+  out to be reachable through a map key that isn't an integer (`map[int]T` given
+  `"abc"`). It now has tests for its pointer, its `file:line:col` and the
+  withheld key text. Coverage showed the unknown-field string match never ran,
+  because `checkKnownFields` rejects unknown keys before `encoding/json` does. I
+  removed it rather than add an exception to the no-string-matching rule. No
+  SPEC change was needed, since the behavior now matches the existing doc
+  comment. (by @claude)
