@@ -255,11 +255,9 @@ func (l *lexer) scanNumber(start ashlar.SourcePos, ptr ashlar.Pointer) (token, e
 		}
 	}
 	if l.src[l.offset] == '0' {
+		// A digit after a leading zero (01) is caught by the suffix check
+		// below, at the offending digit.
 		l.advanceByte()
-		if l.offset < len(l.src) && isDigit(l.src[l.offset]) {
-			l.advanceByte()
-			return token{}, l.syntaxError(l.spanFrom(start), ptr, "leading zero in numeric literal is not permitted")
-		}
 	} else {
 		for l.offset < len(l.src) && isDigit(l.src[l.offset]) {
 			l.advanceByte()

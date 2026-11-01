@@ -12,8 +12,9 @@ import (
 // struct key as the same ErrUnknownField decodeStruct would report. It reads
 // only key names and uses the decoder's own field index, so the two cannot
 // disagree about which keys a struct accepts. It stops at types with custom
-// unmarshalers, which own their shape, and at interfaces. A shape mismatch
-// is left for decodeInto to report.
+// unmarshalers, which own their shape, at interfaces, and at the targets the
+// decoder rejects outright (arrays, maps with non-string keys). A shape
+// mismatch is left for decodeInto to report.
 func checkKnownKeys(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -38,12 +39,15 @@ func checkKnownKeys(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error 
 			}
 		}
 	case reflect.Map:
+		if t.Key().Kind() != reflect.String {
+			return nil
+		}
 		for _, m := range val.Members() {
 			if err := checkKnownKeys(m.Value, ptr.Child(m.Key), t.Elem()); err != nil {
 				return err
 			}
 		}
-	case reflect.Slice, reflect.Array:
+	case reflect.Slice:
 		for i, el := range val.Elements() {
 			if err := checkKnownKeys(el, ptr.Index(i), t.Elem()); err != nil {
 				return err
@@ -99,13 +103,18 @@ func (dc decoder) decodeInto(val ashlar.Value, ptr ashlar.Pointer, dst reflect.V
 	return dc.validationErr(val, ptr, fmt.Sprintf("unsupported destination type %s", dst.Type()), nil)
 }
 
+// indexStructFields maps each YAML key a struct accepts to the index path of
+// its field, promoting the fields of embedded and inline structs.
 func indexStructFields(t reflect.Type) map[string][]int {
 	out := make(map[string][]int)
-	indexStructFieldsInto(t, nil, out)
+	indexStructFieldsInto(t, nil, out, map[reflect.Type]bool{t: true})
 	return out
 }
 
-func indexStructFieldsInto(t reflect.Type, prefix []int, out map[string][]int) {
+// indexStructFieldsInto adds t's keys to out. onPath holds the struct types
+// already being expanded on this branch, so a type that embeds itself, such as
+// struct{ *T }, is not expanded again and cannot recurse forever.
+func indexStructFieldsInto(t reflect.Type, prefix []int, out map[string][]int, onPath map[reflect.Type]bool) {
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
 		idxPath := append(append([]int(nil), prefix...), i)
@@ -113,13 +122,21 @@ func indexStructFieldsInto(t reflect.Type, prefix []int, out map[string][]int) {
 		if skip {
 			continue
 		}
-		if (sf.Anonymous && name == "") || inline {
+		// A named unexported field cannot be set through reflection, so an
+		// inline tag on one is ignored like any unexported field. An embedded
+		// unexported struct still promotes its exported fields, which can be
+		// set.
+		if (sf.Anonymous && name == "") || (inline && (sf.Anonymous || sf.IsExported())) {
 			ft := sf.Type
 			if ft.Kind() == reflect.Pointer {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
-				indexStructFieldsInto(ft, idxPath, out)
+				if !onPath[ft] {
+					onPath[ft] = true
+					indexStructFieldsInto(ft, idxPath, out, onPath)
+					delete(onPath, ft)
+				}
 				continue
 			}
 		}

@@ -172,6 +172,14 @@ func (dc decoder) decodeStruct(val ashlar.Value, ptr ashlar.Pointer, dst reflect
 				nil,
 			)
 		}
+		if !targetField.CanSet() {
+			return dc.validationErr(
+				m.Value,
+				ptr.Child(m.Key),
+				fmt.Sprintf("cannot set field %q in %s: it is unexported", m.Key, dst.Type()),
+				nil,
+			)
+		}
 		if err := dc.decodeInto(m.Value, ptr.Child(m.Key), targetField); err != nil {
 			return err
 		}

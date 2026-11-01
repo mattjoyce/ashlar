@@ -129,8 +129,8 @@ func TestReadPreservesNumberLexemes(t *testing.T) {
 
 // TestReadRejectsNonJSONNumberSpellings checks that number spellings YAML
 // accepts but RFC 8259 does not fail with a located ErrSyntax. The location is
-// the first byte that breaks the grammar: the 'x' or 'o' after a leading 0,
-// and the start of the token otherwise.
+// the first byte that breaks the grammar: the 'x', 'o' or digit after a
+// leading 0, and the start of the token otherwise.
 func TestReadRejectsNonJSONNumberSpellings(t *testing.T) {
 	t.Parallel()
 
@@ -140,7 +140,9 @@ func TestReadRejectsNonJSONNumberSpellings(t *testing.T) {
 	}{
 		{lit: "0x1F", loc: "config.json:2:13"},
 		{lit: "0o17", loc: "config.json:2:13"},
-		{lit: "017", loc: "config.json:2:12"},
+		{lit: "017", loc: "config.json:2:13"},
+		{lit: "-01", loc: "config.json:2:14"},
+		{lit: "00", loc: "config.json:2:13"},
 		{lit: "+1", loc: "config.json:2:12"},
 		{lit: ".5", loc: "config.json:2:12"},
 		{lit: "1.", loc: "config.json:2:12"},
@@ -393,6 +395,8 @@ func TestReadMalformedValueSuffixPointer(t *testing.T) {
 		{"array_first", `{"a": [0x1F]}`, ashlar.ErrSyntax, "/a/0", "c.json:1:9", "invalid number"},
 		{"array_later", `{"a": [1, 2, 0x1F]}`, ashlar.ErrSyntax, "/a/2", "c.json:1:15", "invalid number"},
 		{"root", `0x1F`, ashlar.ErrSyntax, "", "c.json:1:2", "invalid number"},
+		{"leading_zero", `{"v":01}`, ashlar.ErrSyntax, "/v", "c.json:1:7", "invalid number"},
+		{"negative_leading_zero", `{"v":-01}`, ashlar.ErrSyntax, "/v", "c.json:1:8", "invalid number"},
 		{"missing_comma_object", `{"v": 1 2}`, ashlar.ErrSyntax, "", "c.json:1:9", "expected ',' or '}' after object member"},
 		{"string_after_number", `{"v": 1"a"}`, ashlar.ErrSyntax, "", "c.json:1:8", "expected ',' or '}' after object member"},
 		{"missing_comma_array", `[1 2]`, ashlar.ErrSyntax, "", "c.json:1:4", "expected ',' or ']' after array element"},
