@@ -16,7 +16,9 @@ import (
 // sibling members and elements of its ancestors are kept. The composition rule
 // for Pointer itself is applied as in fragment composition. An existing
 // ancestor whose rule is MergeForbidDuplicate rejects the update with
-// ErrComposition; ancestors that do not yet exist are created.
+// ErrComposition; ancestors that do not yet exist are created. A Value that is
+// omitted (ashlar.OmittedValue) is rejected with ErrComposition; use an
+// explicit null to clear a value.
 type Override struct {
 	Pointer ashlar.Pointer
 	Value   ashlar.Value
@@ -134,6 +136,18 @@ func normalizePolicy(p CompositionPolicy) CompositionPolicy {
 func applyOverrides(policy CompositionPolicy, base ashlar.Value, overrides []Override) (ashlar.Value, error) {
 	acc := base
 	for _, ov := range overrides {
+		// An omitted value has no node to place. Accepting it would leave a
+		// member that Keys and Lookup report but presence calls omitted.
+		// Callers clear a value with an explicit null instead.
+		if ov.Value.IsOmitted() {
+			return ashlar.Value{}, ashlar.NewError(
+				ashlar.ErrComposition,
+				ov.Pointer,
+				ov.Value.Provenance().Effective,
+				"override value is omitted; use an explicit null to clear a value",
+				nil,
+			)
+		}
 		tokens, err := ov.Pointer.Tokens()
 		if err != nil {
 			return ashlar.Value{}, ashlar.NewError(
