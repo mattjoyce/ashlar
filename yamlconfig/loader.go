@@ -143,7 +143,9 @@ func classifyYAMLError(source string, via []ashlar.SourceSpan, err error) error 
 
 // classifyYAMLOrigin returns a line-only origin for the "line N:" prefix that
 // yaml.v3 writes into its error text (it exposes no structured position), or
-// the bare source when the text names no line.
+// the bare source when the text names no line. Reading the text is the narrow
+// exception AGENTS.md allows: it extracts a display position only and never
+// decides the error category.
 func classifyYAMLOrigin(source string, via []ashlar.SourceSpan, err error) ashlar.Origin {
 	var pos ashlar.SourcePos
 	if m := reYAMLLine.FindStringSubmatch(err.Error()); len(m) == 2 {
