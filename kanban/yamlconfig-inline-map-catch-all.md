@@ -2,7 +2,7 @@
 id: 1
 status: todo
 priority: Normal
-blocked_by: [2, 3]
+blocked_by: [2, 3, 4]
 tags: [yamlconfig, decode, ductile-compat, spec]
 ---
 
@@ -197,3 +197,9 @@ struct above:
   anonymous-map and inline-pointer edge cases; and a test that null and
   omitted positions produce no error. The include-merge test is trimmed to a
   regression check. (by @claude)
+- 2026-11-02: Card 4 moved field indexing to `yamlconfig/fields.go` and added
+  `checkKnownKeys`, which rejects unknown keys before decoding writes
+  anything. The catch-all rules must apply to both, through the shared
+  `indexStructFields`, or the pre-check will reject keys the catch-all
+  should accept. The line references to decode.go above are now stale.
+  (by @claude)

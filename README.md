@@ -44,6 +44,8 @@ A node is redacted when its own provenance is marked sensitive or the active `Re
 policy.Redactor = ashlar.CombineRedactors(ashlar.DefaultRedactor(), myRedactor)
 ```
 
+Only classified values are protected. Decode errors otherwise follow Go convention and can quote the offending value, as `strconv` and `time` errors do, so a secret under a key your redactor does not recognize can appear in one. Load-time errors (syntax, number spellings, includes) never quote document content.
+
 ---
 
 ## Quality Gates

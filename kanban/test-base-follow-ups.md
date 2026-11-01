@@ -1,6 +1,6 @@
 ---
 id: 4
-status: todo
+status: done
 priority: Normal
 blocked_by: []
 tags: [follow-up, yamlconfig, jsoncontract, decode]
@@ -183,3 +183,7 @@ a regression.
   convention after comparing encoding/json, mapstructure, yaml.v3 and
   goccy/go-yaml. Ready to implement; items 3, 5 and 7 are behavior changes
   for the v0.3.0 notes. (by @claude)
+- 2026-11-02: Implemented all nine decisions on branch card4-decisions, one
+  commit per item, with tests that fail without each change. Field indexing
+  now lives in yamlconfig/fields.go and is shared by the decoder and the
+  unknown-key pre-check, which card 1 must extend. (by @claude)
