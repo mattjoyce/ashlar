@@ -1,6 +1,6 @@
 ---
 id: 1
-status: doing
+status: done
 priority: Normal
 blocked_by: []
 tags: [yamlconfig, decode, ductile-compat, spec]
@@ -41,7 +41,7 @@ Readers of `Overrides` in Ductile: `ResolvedPluginConf.Timeout`
 (`cmd/ductile/config.go:424`, which shows each entry as `timeouts.<cmd>` with its
 source), and the audit snapshot (`configsnapshot/snapshot.go:594`).
 
-## Current behavior (bug)
+## Behavior before this card (bug)
 
 In `yamlconfig/decode.go:250`, `indexStructFieldsInto` treats `inline` only when
 the field type is a struct. For a map, the check falls through. Because the tag's
@@ -205,6 +205,14 @@ struct above:
   (by @claude)
 - 2026-11-02: Implemented on branch card1-inline-map-catch-all. The catch-all
   lives in `structFields` (yamlconfig/fields.go), which both the unknown-key
-  pre-check and `decodeStruct` use. Tests in yamlconfig/inline_map_test.go
-  failed on master before the change. `decodeStruct` moved to fields.go to
+  pre-check and `decodeStruct` use. Every test function in
+  yamlconfig/inline_map_test.go failed on master before the change. Some
+  subtests, such as the null and omitted positions, pass on master by design
+  as regression guards. `decodeStruct` moved to fields.go to
   keep decode.go under 400 lines. (by @claude)
+- 2026-11-02: Ductile's consumer check on PR #3 passed and noted that a
+  catch-all trades typo detection; SPEC 3.4 now says so (wording from a Fable
+  design review). Codex was over its usage limit, so a Fable code review
+  replaced the GPT review. It found no bugs or panics in a 20-case probe suite
+  and asked for tests of dash-field keys, case and embedded maps, which were
+  added. Merged as PR #3. (by @claude)
