@@ -27,12 +27,12 @@ the caller supplies the policy.
 - A function that walks a value against a destination type and returns every
   unknown key as an `ErrUnknownField` error with pointer and `file:line:col`.
   It decodes nothing.
-- It must use the decoder's own field index (`structFields` in
-  yamlconfig/fields.go, including card 1's catch-all), so it cannot disagree
+- It must use the decoder's own field index (`indexStructFields` in
+  yamlconfig/fields.go, which returns `structFields` with card 1's catch-all), so it cannot disagree
   with `DecodeStrict`. Today `checkKnownKeys` walks the same tree and stops at
   the first hit.
 - `DecodeStrict` and `DecodeValueStrict` stay strict. There is no lenient
-  decode mode: a caller that wants to warn calls the report, acts on it, and
+  decode mode. A caller that wants to warn calls the report, acts on it, and
   decodes into a type that tolerates the keys or strips them first.
 
 ## Open questions

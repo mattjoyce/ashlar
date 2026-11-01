@@ -30,9 +30,11 @@ below.
 
 ## Shape (to decide)
 
-- Follow shell syntax rather than inventing some: `${VAR}` keeps failing on
-  unset or empty, as `${VAR:?}` does in shell, and `${VAR?}` fails only when
-  the variable is unset. No default-value syntax (`${VAR:-x}`) unless asked
+- Take shell syntax as the model rather than inventing some, with one
+  difference. In shell, plain `${VAR}` expands an unset variable to empty.
+  Ashlar's `${VAR}` already behaves like shell's `${VAR:?}`, failing on unset
+  or empty, and keeps doing so. Add `${VAR?}`, which fails only when the
+  variable is unset. No default-value syntax (`${VAR:-x}`) unless asked
   for separately.
 - Or a per-binding option on `EnvBinding`. That is simpler to parse but
   applies to every reference at once.

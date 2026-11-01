@@ -37,6 +37,10 @@ Which files make up a configuration is the application's policy.
 - How hidden files and directories (`.git`, editor swap files) are treated.
   Today a `.foo.yaml` is included.
 - Sort order across subdirectories, if recursion stays available.
+- Whether a directory with no matching files is an error. Today it silently
+  contributes nothing.
+- How symlinks are treated. `fs.WalkDir` does not follow symlinked
+  directories, and a symlinked file is read through.
 
 ## Narrative
 - 2026-11-02: Created from the Ductile consumer check on PR #3. (by @claude)
