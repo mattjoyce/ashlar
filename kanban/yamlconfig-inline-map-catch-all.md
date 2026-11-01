@@ -2,7 +2,7 @@
 id: 1
 status: todo
 priority: Normal
-blocked_by: []
+blocked_by: [2, 3]
 tags: [yamlconfig, decode, ductile-compat, spec]
 ---
 
@@ -157,4 +157,9 @@ struct above:
   string-kinded keys to match `decodeMap`; add to existing maps as yaml.v3 does;
   validate when each struct mapping is decoded. Also added acceptance criteria
   for null entries, closedness, redaction, and merging across includes.
+  (by @claude)
+- 2026-11-01: Blocked on cards 2 and 3. Card 2 fixes a jsoncontract test that
+  fails on master. Card 3 builds the test base that AGENTS.md §3 expects. This
+  change opens a deliberate exception to strict decoding, so it shouldn't land
+  until syntax-error location, redaction and provenance have real tests.
   (by @claude)
