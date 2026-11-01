@@ -104,7 +104,7 @@ func (d Document) classifyDecodeError(err error) error {
 			ashlar.ErrValidation,
 			ptr,
 			orig,
-			fmt.Sprintf("cannot unmarshal JSON %s into Go type %s", kindFromTypeValue(typeErr.Value), typeErr.Type),
+			fmt.Sprintf("cannot unmarshal JSON %s into Go %s", kindFromTypeValue(typeErr.Value), goKind(typeErr.Type)),
 			withheldDecodeError{err},
 		)
 	}
@@ -118,6 +118,16 @@ func (d Document) classifyDecodeError(err error) error {
 		"JSON value rejected by decoder",
 		withheldDecodeError{err},
 	)
+}
+
+// goKind describes t by its reflect.Kind only. A custom unmarshaler can build
+// t with reflect.StructOf, putting input text into its name or tags, so the
+// full type string is never printed.
+func goKind(t reflect.Type) string {
+	if t == nil {
+		return "value"
+	}
+	return t.Kind().String()
 }
 
 // kindFromTypeValue returns the JSON kind word that starts a
