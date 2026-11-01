@@ -18,6 +18,10 @@ import (
 
 var (
 	reYAMLLine = regexp.MustCompile(`line (\d+):`)
+
+	// reLeadingZeroInt matches an optional sign, a zero, then at least one
+	// more digit, with underscores allowed after the zero.
+	reLeadingZeroInt = regexp.MustCompile(`^[+-]?0[0-9_]*[0-9][0-9_]*$`)
 )
 
 // Read parses raw YAML bytes from source into an immutable ashlar.Value tree,
@@ -272,7 +276,15 @@ func convertSequenceNode(
 	return ashlar.ArrayValue(elems, prov), nil
 }
 
+// leadingZeroError is the fixed message for a leading-zero integer spelling.
+// It never quotes the scalar.
+const leadingZeroError = "leading-zero integer spelling is not allowed; " +
+	"use decimal without leading zeros or explicit 0o octal notation"
+
 func convertScalarNode(ptr ashlar.Pointer, n *yaml.Node, prov ashlar.Provenance) (ashlar.Value, error) {
+	if hasAmbiguousLeadingZero(n) {
+		return ashlar.Value{}, scalarSyntaxErr(ptr, prov, leadingZeroError)
+	}
 	switch n.ShortTag() {
 	case "!!null":
 		return ashlar.NullValue(prov), nil
@@ -297,6 +309,28 @@ func convertScalarNode(ptr ashlar.Pointer, n *yaml.Node, prov ashlar.Provenance)
 		}
 		return ashlar.StringValue(n.Value, prov), nil
 	}
+}
+
+// hasAmbiguousLeadingZero reports whether n spells an integer with a leading
+// zero, such as 017, 08 or -0_17. YAML 1.1 reads 017 as octal 15 and YAML 1.2
+// reads it as decimal 17, and yaml.v3 reads 017 as 15 but 08 as 8, so Ashlar
+// rejects the spelling rather than pick a meaning. The check is on spelling,
+// not on the tag yaml.v3 inferred, because yaml.v3 resolves 08 as a float. It
+// covers plain untagged scalars (including ones yaml.v3 resolved to a string
+// because they overflow) and any scalar explicitly tagged !!int or !!float.
+// Quoted strings and !!str stay strings. 0, 0.5, 0e1 and 010.5 are not
+// matched: a float with a leading zero has no octal reading.
+func hasAmbiguousLeadingZero(n *yaml.Node) bool {
+	switch n.ShortTag() {
+	case "!!int", "!!float":
+	case "!!str":
+		if n.Style != 0 {
+			return false
+		}
+	default:
+		return false
+	}
+	return reLeadingZeroInt.MatchString(n.Value)
 }
 
 func convertYAMLInt(ptr ashlar.Pointer, n *yaml.Node, prov ashlar.Provenance) (ashlar.Value, error) {

@@ -178,6 +178,11 @@ type ProvenanceEntry struct {
 // A number lexeme is always a JSON number literal. YAML spellings outside that grammar
 // (0x1F, 0o17, +1, 1_000, .5) keep their value but are stored in JSON decimal form.
 // YAML .inf and .nan have no JSON form and are rejected with a located ErrSyntax.
+// YAML integers spelled with a leading zero (017, 08, 00, -0_17) are rejected with a
+// located ErrSyntax, because YAML 1.1 reads 017 as octal 15 and YAML 1.2 as decimal 17.
+// The rule matches the spelling ^[+-]?0[0-9_]*[0-9][0-9_]*$ on plain untagged scalars
+// and on scalars tagged !!int or !!float. Write 0o17 for octal or 17 for decimal.
+// 0, -0, 0.5, 0e1 and 010.5 are accepted; quoted strings and !!str 017 stay strings.
 // A plain YAML scalar that is a valid JSON number stays a number even when it
 // overflows float64 (1e400), so decoding it into a float fails instead of the
 // value silently becoming a string. Decoding into an interface (any) yields

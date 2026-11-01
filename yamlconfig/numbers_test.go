@@ -550,3 +550,67 @@ func TestYAMLNumberMismatchMessages(t *testing.T) {
 		}
 	}
 }
+
+// TestYAMLLeadingZeroIntegersRejected checks that integer spellings with a
+// leading zero fail with a located ErrSyntax and a fixed message that does not
+// quote the scalar, while unambiguous spellings and strings still load.
+func TestYAMLLeadingZeroIntegersRejected(t *testing.T) {
+	t.Parallel()
+
+	rejected := []string{
+		"00", "007", "017", "08", "09", "0017", "0_17", "+017", "-017",
+		"!!int 017", "!!float 017", "!!float 08", "!!int \"017\"",
+		"0123456789012345678901234567890",
+	}
+	for _, lit := range rejected {
+		t.Run("reject/"+lit, func(t *testing.T) {
+			t.Parallel()
+			dir := writeNumberDoc(t, lit)
+			_, err := yamlconfig.ReadFS(os.DirFS(dir), "config.yaml")
+			msg := requirePointerError(t, err, ashlar.ErrSyntax, "/value", numberLoc)
+			if !strings.HasPrefix(msg, "leading-zero integer spelling is not allowed") {
+				t.Errorf("Message = %q, want the fixed leading-zero message", msg)
+			}
+			bare := strings.TrimPrefix(strings.TrimPrefix(lit, "!!int "), "!!float ")
+			if strings.Contains(err.Error(), strings.Trim(bare, "\"")) {
+				t.Errorf("Error() = %q, quotes the scalar %q", err.Error(), bare)
+			}
+		})
+	}
+
+	accepted := []struct {
+		lit     string
+		kind    ashlar.Kind
+		wantLex string
+	}{
+		{"0", ashlar.KindNumber, "0"},
+		{"-0", ashlar.KindNumber, "-0"},
+		{"0.5", ashlar.KindNumber, "0.5"},
+		{"0e1", ashlar.KindNumber, "0e1"},
+		{"0o17", ashlar.KindNumber, "15"},
+		{"0x1F", ashlar.KindNumber, "31"},
+		{"010.5", ashlar.KindNumber, "10.5"},
+		{"1_000", ashlar.KindNumber, "1000"},
+		{"!!str 017", ashlar.KindString, "017"},
+		{"\"017\"", ashlar.KindString, "017"},
+		{"'017'", ashlar.KindString, "017"},
+	}
+	for _, tc := range accepted {
+		t.Run("accept/"+tc.lit, func(t *testing.T) {
+			t.Parallel()
+			dir := writeNumberDoc(t, tc.lit)
+			v := readYAMLFile(t, dir, "config.yaml").At("/value")
+			if v.Kind() != tc.kind {
+				t.Fatalf("Kind() = %v, want %v", v.Kind(), tc.kind)
+			}
+			got, _ := v.NumberLexeme()
+			if tc.kind == ashlar.KindString {
+				s, _ := v.StringVal()
+				got = s
+			}
+			if string(got) != tc.wantLex {
+				t.Errorf("value = %q, want %q", got, tc.wantLex)
+			}
+		})
+	}
+}
