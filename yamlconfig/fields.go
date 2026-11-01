@@ -16,6 +16,14 @@ import (
 // decoder rejects outright (arrays, maps with non-string keys). A shape
 // mismatch is left for decodeInto to report.
 func checkKnownKeys(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error {
+	if !val.IsPresent() {
+		return nil
+	}
+	// A pointer type can point to itself (type P *P). It has no struct to
+	// check, and decodeInto rejects it.
+	if isPointerCycle(t) {
+		return nil
+	}
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -66,41 +74,6 @@ func unknownFieldErr(ptr ashlar.Pointer, m ashlar.Member) error {
 		fmt.Sprintf("unknown field %q", m.Key),
 		nil,
 	)
-}
-
-func (dc decoder) decodeInto(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
-	if val.IsNull() {
-		dst.Set(reflect.Zero(dst.Type()))
-		return nil
-	}
-
-	if dst.Kind() == reflect.Pointer {
-		if dst.IsNil() {
-			dst.Set(reflect.New(dst.Type().Elem()))
-		}
-		return dc.decodeInto(val, ptr, dst.Elem())
-	}
-
-	if ok, err := dc.tryCustomUnmarshaler(val, ptr, dst); ok {
-		return err
-	}
-
-	switch dst.Kind() {
-	case reflect.Struct:
-		return dc.decodeStruct(val, ptr, dst)
-	case reflect.Map:
-		return dc.decodeMap(val, ptr, dst)
-	case reflect.Slice:
-		return dc.decodeSlice(val, ptr, dst)
-	case reflect.Interface:
-		if dst.NumMethod() == 0 {
-			dst.Set(reflect.ValueOf(valueToGoAny(val, false)))
-			return nil
-		}
-	default:
-		return dc.decodeScalar(val, ptr, dst)
-	}
-	return dc.validationErr(val, ptr, fmt.Sprintf("unsupported destination type %s", dst.Type()), nil)
 }
 
 // indexStructFields maps each YAML key a struct accepts to the index path of
@@ -187,4 +160,18 @@ func fieldByIndexPath(v reflect.Value, path []int) (reflect.Value, bool) {
 		cur = cur.Field(idx)
 	}
 	return cur, true
+}
+
+// isPointerCycle reports whether unwrapping pointer type t never reaches a
+// non-pointer, as with type P *P. Decoding a value into one would allocate
+// forever.
+func isPointerCycle(t reflect.Type) bool {
+	seen := map[reflect.Type]bool{}
+	for ; t.Kind() == reflect.Pointer; t = t.Elem() {
+		if seen[t] {
+			return true
+		}
+		seen[t] = true
+	}
+	return false
 }

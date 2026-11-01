@@ -78,6 +78,44 @@ func (dc decoder) decodeRoot(val ashlar.Value, dst any) error {
 	return dc.decodeInto(val, ashlar.RootPointer, rv.Elem())
 }
 
+func (dc decoder) decodeInto(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
+	if val.IsNull() {
+		dst.Set(reflect.Zero(dst.Type()))
+		return nil
+	}
+
+	if dst.Kind() == reflect.Pointer {
+		if isPointerCycle(dst.Type()) {
+			return dc.validationErr(val, ptr, fmt.Sprintf("unsupported destination type %s: the pointer type refers to itself", dst.Type()), nil)
+		}
+		if dst.IsNil() {
+			dst.Set(reflect.New(dst.Type().Elem()))
+		}
+		return dc.decodeInto(val, ptr, dst.Elem())
+	}
+
+	if ok, err := dc.tryCustomUnmarshaler(val, ptr, dst); ok {
+		return err
+	}
+
+	switch dst.Kind() {
+	case reflect.Struct:
+		return dc.decodeStruct(val, ptr, dst)
+	case reflect.Map:
+		return dc.decodeMap(val, ptr, dst)
+	case reflect.Slice:
+		return dc.decodeSlice(val, ptr, dst)
+	case reflect.Interface:
+		if dst.NumMethod() == 0 {
+			dst.Set(reflect.ValueOf(valueToGoAny(val, false)))
+			return nil
+		}
+	default:
+		return dc.decodeScalar(val, ptr, dst)
+	}
+	return dc.validationErr(val, ptr, fmt.Sprintf("unsupported destination type %s", dst.Type()), nil)
+}
+
 // tryCustomUnmarshaler handles time.Duration and types with their own
 // unmarshalers. Failures follow Go convention: Ashlar's message names the
 // target type, and the parser's own error is wrapped as the cause, so its text
