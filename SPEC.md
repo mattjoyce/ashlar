@@ -375,7 +375,11 @@ func (r Resolved) SourceHash() (string, error)
 //     two inline maps, a key kind that is not string, an inline pointer to a map, and
 //     an inline map inside an embedded or inline struct (declare it on the decoded
 //     struct itself). A null or omitted struct decodes no mapping and is not checked.
-//     An unexported inline map is ignored and the struct stays closed.
+//     An unexported inline map is ignored and the struct stays closed. A catch-all
+//     trades typo detection for its struct. `pol: 30s` for `poll` decodes as an entry,
+//     as do `Poll: 30s` (matching is case-sensitive) and a key naming a `-` field.
+//     Valid entry names are the caller's domain; a caller that knows them checks the
+//     map's keys after decoding, and the entry's pointer still locates the error.
 //   - Unknown keys anywhere in the value are rejected before dst is written, using the
 //     same field index as decoding. Other failures can leave dst partly written.
 //   - Custom unmarshalers. null zeroes the target. A number goes to json.Unmarshaler

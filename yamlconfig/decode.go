@@ -44,7 +44,9 @@ type decoder struct {
 // one on its struct, be a map rather than a pointer to one, and be declared on
 // the decoded struct itself rather than inside an embedded or inline struct;
 // otherwise decoding a mapping into the struct fails with ErrValidation. An
-// unexported inline map is ignored.
+// unexported inline map is ignored. A catch-all accepts a misspelled sibling
+// key (pol for poll) as an entry; callers that know the valid names check the
+// map after decoding.
 //
 // Unknown keys are rejected before dst is written, so that failure leaves dst
 // untouched. Any other failure, such as a value of the wrong type or a custom
