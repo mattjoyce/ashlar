@@ -245,16 +245,12 @@ func TestYAMLNonFiniteFloats(t *testing.T) {
 			t.Parallel()
 			dir := writeNumberDoc(t, lit)
 			root, err := yamlconfig.ReadFS(os.DirFS(dir), "config.yaml")
-			if err == nil {
-				lex, ok := root.At(numberPtr).NumberLexeme()
-				if !ok || lex != lit {
-					t.Errorf("NumberLexeme() = %q, %v; want %q, true", lex, ok, lit)
-				}
-				return
+			if !root.IsOmitted() {
+				t.Errorf("ReadFS() root = %v, want omitted on error", root.Kind())
 			}
 			msg := requirePointerError(t, err, ashlar.ErrSyntax, numberPtr, numberLoc)
-			if !strings.Contains(msg, lit) {
-				t.Errorf("Message = %q, want it to quote the source spelling %q", msg, lit)
+			if strings.Contains(msg, lit) {
+				t.Errorf("Message = %q quotes the scalar %q; load errors must withhold it", msg, lit)
 			}
 		})
 	}
@@ -274,8 +270,8 @@ func TestYAMLExplicitNumericTags(t *testing.T) {
 	}{
 		{name: "float_tag_on_integer_text", lit: "!!float 1", wantLex: "1"},
 		{name: "int_tag_on_integer_text", lit: "!!int 42", wantLex: "42"},
-		{name: "float_tag_on_word", lit: "!!float abc", wantMsg: `invalid YAML float "abc"`},
-		{name: "int_tag_on_word", lit: "!!int abc", wantMsg: `invalid YAML integer "abc"`},
+		{name: "float_tag_on_word", lit: "!!float abc", wantMsg: "invalid YAML float"},
+		{name: "int_tag_on_word", lit: "!!int abc", wantMsg: "invalid YAML integer"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -485,24 +481,28 @@ func TestYAMLNonJSONSpellingsNormalizeToDecimal(t *testing.T) {
 	}
 }
 
-// TestYAMLScalarSyntaxErrorRedactsSensitiveSpelling checks that a malformed
-// tagged number under a sensitive key reports a located ErrSyntax without
-// quoting the value, while the same mistake under a plain key quotes it.
-func TestYAMLScalarSyntaxErrorRedactsSensitiveSpelling(t *testing.T) {
+// TestYAMLScalarSyntaxErrorWithholdsValue checks that a malformed tagged
+// number fails with a located ErrSyntax that never shows the scalar. The
+// loader runs before any caller redaction policy, so it withholds the value
+// under every key: one DefaultRedactor flags, one only a custom policy would
+// flag, and one carrying characters that %q escapes.
+func TestYAMLScalarSyntaxErrorWithholdsValue(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		key      string
-		wantSeen bool
+		name   string
+		line   string
+		secret string
 	}{
-		{"password", false},
-		{"retries", true},
+		{"default_sensitive_key", "password: !!int hunter2-sekrit", "hunter2-sekrit"},
+		{"custom_sensitive_key", "pin: !!int hidden-value", "hidden-value"},
+		{"escaped_characters", `password: !!float "line1\nline2"`, "line1"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.key, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			doc := "app: demo\n" + tc.key + ": !!int hunter2-sekrit\n"
+			doc := "app: demo\n" + tc.line + "\n"
 			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(doc), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -510,10 +510,9 @@ func TestYAMLScalarSyntaxErrorRedactsSensitiveSpelling(t *testing.T) {
 			if !errors.Is(err, ashlar.ErrSyntax) {
 				t.Fatalf("ReadFS() error = %v, want ErrSyntax", err)
 			}
-			for _, format := range []string{"%v", "%+v", "%q"} {
-				got := fmt.Sprintf(format, err)
-				if seen := strings.Contains(got, "hunter2-sekrit"); seen != tc.wantSeen {
-					t.Errorf("format %q: value shown = %v, want %v: %s", format, seen, tc.wantSeen, got)
+			for _, format := range []string{"%v", "%+v", "%#v", "%q"} {
+				if got := fmt.Sprintf(format, err); strings.Contains(got, tc.secret) {
+					t.Errorf("format %q shows %q: %s", format, tc.secret, got)
 				}
 			}
 		})

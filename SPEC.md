@@ -179,7 +179,11 @@ type ProvenanceEntry struct {
 // YAML .inf and .nan have no JSON form and are rejected with a located ErrSyntax.
 // A plain YAML scalar that is a valid JSON number stays a number even when it
 // overflows float64 (1e400), so decoding it into a float fails instead of the
-// value silently becoming a string.
+// value silently becoming a string. Decoding into an interface (any) yields
+// int64, uint64 or float64 when one holds the number exactly; otherwise, as
+// with 1e400 or an integer past uint64, it yields json.Number with the lexeme.
+// Load-time scalar conversion errors never quote the scalar, because no caller
+// redaction policy applies yet.
 // Objects preserve both key lookup and deterministic declaration/sorted iteration.
 type Value struct {
 	// Unexported fields ensure immutability.

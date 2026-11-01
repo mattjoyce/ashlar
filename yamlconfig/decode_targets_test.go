@@ -1,10 +1,12 @@
 package yamlconfig_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -175,7 +177,7 @@ func anyDocWant() map[string]any {
 		"port":    int64(8080),
 		"ratio":   1.0,
 		"big":     uint64(1 << 63),
-		"huge":    18446744073709551616.0,
+		"huge":    json.Number("18446744073709551616"), // past uint64; float64 would round it
 		"enabled": false,
 		"nothing": nil,
 		"tags":    []any{"a", "b"},
@@ -589,4 +591,56 @@ func TestDecodeCustomUnmarshalerErrorRedactsSensitiveNode(t *testing.T) {
 			t.Errorf("Error() = %q, want the unmarshaler text for a non-sensitive key", err.Error())
 		}
 	})
+}
+
+// TestDecodeIntoAnyKeepsUnrepresentableNumbers checks that numbers int64,
+// uint64 and finite float64 cannot hold decode into interface destinations as
+// json.Number with their exact lexeme, never as +Inf or a rounded float. It
+// covers a root interface, map values and sequence elements, through both
+// decode entry points.
+func TestDecodeIntoAnyKeepsUnrepresentableNumbers(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	doc := "huge_float: 1e400\nhuge_int: 123456789012345678901234567890\nlist: [1e400, 1.5, 7]\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := yamlconfig.ReadFS(os.DirFS(dir), "config.yaml")
+	if err != nil {
+		t.Fatalf("ReadFS() error = %v", err)
+	}
+	resolved, err := yamlconfig.Resolve(context.Background(), os.DirFS(dir), "config.yaml", yamlconfig.ResolveOptions{})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	want := map[string]any{
+		"huge_float": json.Number("1e400"),
+		"huge_int":   json.Number("123456789012345678901234567890"),
+		"list":       []any{json.Number("1e400"), 1.5, int64(7)},
+	}
+
+	decoders := map[string]func(any) error{
+		"DecodeValueStrict":     func(dst any) error { return yamlconfig.DecodeValueStrict(root, dst) },
+		"Resolved.DecodeStrict": resolved.DecodeStrict,
+	}
+	for name, decode := range decoders {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var asAny any
+			if err := decode(&asAny); err != nil {
+				t.Fatalf("decode into any: %v", err)
+			}
+			if !reflect.DeepEqual(asAny, want) {
+				t.Errorf("any = %#v, want %#v", asAny, want)
+			}
+			var asMap map[string]any
+			if err := decode(&asMap); err != nil {
+				t.Fatalf("decode into map: %v", err)
+			}
+			if !reflect.DeepEqual(asMap, want) {
+				t.Errorf("map = %#v, want %#v", asMap, want)
+			}
+		})
+	}
 }
