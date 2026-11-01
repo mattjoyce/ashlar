@@ -1,8 +1,8 @@
 ---
 id: 1
-status: todo
+status: doing
 priority: Normal
-blocked_by: [2, 3, 4]
+blocked_by: []
 tags: [yamlconfig, decode, ductile-compat, spec]
 ---
 
@@ -107,50 +107,50 @@ struct above:
 
 ## Acceptance criteria
 
-- [ ] `SPEC.md` §3.4 gains a paragraph on how `DecodeStrict` and
+- [x] `SPEC.md` §3.4 gains a paragraph on how `DecodeStrict` and
       `DecodeValueStrict` handle tags: `yaml` first with `json` as fallback,
       `-`, inline struct promotion, unknown-field rejection, and the catch-all
       rules. It lists `DecodeValueStrict`, which SPEC.md doesn't mention today.
       The two doc comments say the same. JSON-contract decoding (§3.2) is
       unchanged.
-- [ ] Ductile's shape `yaml:",inline,omitempty"` decodes `poll`, `handle`, and
+- [x] Ductile's shape `yaml:",inline,omitempty"` decodes `poll`, `handle`, and
       `cpu` correctly.
-- [ ] Tag handling, as a regression check. `json:",inline"` works as the
+- [x] Tag handling, as a regression check. `json:",inline"` works as the
       fallback, a YAML tag takes precedence over a JSON tag, `yaml:"-"`
       excludes the field, and `yaml:"overrides,inline"` is still the catch-all.
       No general validation of tag options is added.
-- [ ] A named field wins over the catch-all, including a field promoted from an
+- [x] A named field wins over the catch-all, including a field promoted from an
       inline struct.
-- [ ] With no extra keys, a nil map stays nil and a map that already has entries
+- [x] With no extra keys, a nil map stays nil and a map that already has entries
       is unchanged. With extra keys, the map holds exactly those entries.
-- [ ] A catch-all keyed by a named string type (`type Command string`) decodes
+- [x] A catch-all keyed by a named string type (`type Command string`) decodes
       its entries.
-- [ ] An omitted `cpu` creates no entry. Both `cpu: null` and `cpu: 0s` create a
+- [x] An omitted `cpu` creates no entry. Both `cpu: null` and `cpu: 0s` create a
       zero-duration entry. `Root().PresenceAt` tells omitted, null, and present
       apart at the flat pointer.
-- [ ] `cpu: banana` reports an error located at `/timeouts/cpu`.
-- [ ] A sensitive entry stays redacted in error strings and provenance output.
+- [x] `cpu: banana` reports an error located at `/timeouts/cpu`.
+- [x] A sensitive entry stays redacted in error strings and provenance output.
       This holds under the default key classification and under a
       caller-supplied redactor.
-- [ ] Each case fails with `ErrValidation`, located at the struct mapping's
+- [x] Each case fails with `ErrValidation`, located at the struct mapping's
       pointer, including on an empty mapping: two inline maps, a non-string key
       kind, an inline pointer-to-map, and an inline map inside an inline
       struct. The same struct at a `null` or omitted position produces no error.
       An unexported inline map leaves the struct closed.
-- [ ] A struct inside a catch-all entry still rejects unknown keys. A sibling
+- [x] A struct inside a catch-all entry still rejects unknown keys. A sibling
       struct without a catch-all still rejects them too.
-- [ ] After a successful decode, `Resolved.Explain` reports the `file:line:col`
+- [x] After a successful decode, `Resolved.Explain` reports the `file:line:col`
       origin of an entry at its flat pointer. One key contains `/` or `~` to
       check RFC 6901 escaping.
-- [ ] Composition regression check, with no new rules. An included file
+- [x] Composition regression check, with no new rules. An included file
       overrides one extra key, and the decoded entry has the winning value and
       the winning origin.
-- [ ] A struct shaped like Ductile's (`Overrides map[string]time.Duration` tagged
+- [x] A struct shaped like Ductile's (`Overrides map[string]time.Duration` tagged
       inline) changes behavior, and the commit message calls this out.
       - `overrides: {cpu: 15s}` used to fill the map through a wrapper key nobody
         declared. Now it fails with a located decode error at `/overrides`.
       - `overrides: 15s` becomes a legitimate entry named `"overrides"`.
-- [ ] All AGENTS.md §4 gates pass.
+- [x] All AGENTS.md §4 gates pass.
 
 ## Implementation notes
 
@@ -203,3 +203,8 @@ struct above:
   `indexStructFields`, or the pre-check will reject keys the catch-all
   should accept. The line references to decode.go above are now stale.
   (by @claude)
+- 2026-11-02: Implemented on branch card1-inline-map-catch-all. The catch-all
+  lives in `structFields` (yamlconfig/fields.go), which both the unknown-key
+  pre-check and `decodeStruct` use. Tests in yamlconfig/inline_map_test.go
+  failed on master before the change. `decodeStruct` moved to fields.go to
+  keep decode.go under 400 lines. (by @claude)
