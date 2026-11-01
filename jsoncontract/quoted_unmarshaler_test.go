@@ -67,12 +67,18 @@ func TestDecodeStrictQuotedCustomUnmarshaler(t *testing.T) {
 }
 
 // forgedTypeError is a type whose UnmarshalJSON returns a
-// *json.UnmarshalTypeError built from its input, so Value and Field carry
-// document content that DecodeStrict must not print.
+// *json.UnmarshalTypeError built from its input: Value, Field and a Type made
+// with reflect.StructOf all carry document content that DecodeStrict must not
+// print.
 type forgedTypeError string
 
 func (f *forgedTypeError) UnmarshalJSON(raw []byte) error {
-	return &json.UnmarshalTypeError{Value: string(raw), Field: string(raw), Type: reflect.TypeFor[int]()}
+	forged := reflect.StructOf([]reflect.StructField{{
+		Name: "X",
+		Type: reflect.TypeFor[string](),
+		Tag:  reflect.StructTag(`secret:"` + string(raw) + `"`),
+	}})
+	return &json.UnmarshalTypeError{Value: string(raw), Field: string(raw), Type: forged}
 }
 
 // TestDecodeStrictForgedTypeErrorWithheld checks that a type error built by a
