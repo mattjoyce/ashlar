@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/mattjoyce/ashlar"
@@ -36,6 +34,18 @@ type decoder struct {
 // redact a node's value when its provenance is marked sensitive or
 // DefaultRedactor classifies its pointer, so values that were never resolved
 // under a policy are still protected.
+//
+// Unknown keys are rejected before dst is written, so that failure leaves dst
+// untouched. Any other failure, such as a value of the wrong type or a custom
+// unmarshaler error, is found while decoding and can leave dst partly
+// written. When all-or-nothing matters, decode into a fresh value and assign
+// it on success:
+//
+//	var next Config
+//	if err := yamlconfig.DecodeValueStrict(root, &next); err != nil {
+//		return err
+//	}
+//	current = next
 func DecodeValueStrict(val ashlar.Value, dst any) error {
 	return decoder{}.decodeRoot(val, dst)
 }
@@ -60,42 +70,12 @@ func (dc decoder) decodeRoot(val ashlar.Value, dst any) error {
 			nil,
 		)
 	}
-	return dc.decodeInto(val, ashlar.RootPointer, rv.Elem())
-}
-
-func (dc decoder) decodeInto(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
-	if val.IsNull() {
-		dst.Set(reflect.Zero(dst.Type()))
-		return nil
-	}
-
-	if dst.Kind() == reflect.Pointer {
-		if dst.IsNil() {
-			dst.Set(reflect.New(dst.Type().Elem()))
-		}
-		return dc.decodeInto(val, ptr, dst.Elem())
-	}
-
-	if ok, err := dc.tryCustomUnmarshaler(val, ptr, dst); ok {
+	// Reject unknown keys before writing anything, so the failure strict
+	// decoding exists for never leaves dst half-filled.
+	if err := checkKnownKeys(val, ashlar.RootPointer, rv.Elem().Type()); err != nil {
 		return err
 	}
-
-	switch dst.Kind() {
-	case reflect.Struct:
-		return dc.decodeStruct(val, ptr, dst)
-	case reflect.Map:
-		return dc.decodeMap(val, ptr, dst)
-	case reflect.Slice:
-		return dc.decodeSlice(val, ptr, dst)
-	case reflect.Interface:
-		if dst.NumMethod() == 0 {
-			dst.Set(reflect.ValueOf(valueToGoAny(val, false)))
-			return nil
-		}
-	default:
-		return dc.decodeScalar(val, ptr, dst)
-	}
-	return dc.validationErr(val, ptr, fmt.Sprintf("unsupported destination type %s", dst.Type()), nil)
+	return dc.decodeInto(val, ashlar.RootPointer, rv.Elem())
 }
 
 // tryCustomUnmarshaler handles time.Duration and types with their own
@@ -181,13 +161,7 @@ func (dc decoder) decodeStruct(val ashlar.Value, ptr ashlar.Pointer, dst reflect
 	for _, m := range val.Members() {
 		idxPath, ok := fields[m.Key]
 		if !ok {
-			return ashlar.NewError(
-				ashlar.ErrUnknownField,
-				ptr.Child(m.Key),
-				m.KeyOrigin,
-				fmt.Sprintf("unknown field %q", m.Key),
-				nil,
-			)
+			return unknownFieldErr(ptr, m)
 		}
 		targetField, ok := fieldByIndexPath(dst, idxPath)
 		if !ok {
@@ -306,130 +280,6 @@ func (dc decoder) decodeNumber(val ashlar.Value, ptr ashlar.Pointer, dst reflect
 	return nil
 }
 
-func indexStructFields(t reflect.Type) map[string][]int {
-	out := make(map[string][]int)
-	indexStructFieldsInto(t, nil, out)
-	return out
-}
-
-func indexStructFieldsInto(t reflect.Type, prefix []int, out map[string][]int) {
-	for i := 0; i < t.NumField(); i++ {
-		sf := t.Field(i)
-		idxPath := append(append([]int(nil), prefix...), i)
-		name, skip, inline := parseFieldTag(sf)
-		if skip {
-			continue
-		}
-		if (sf.Anonymous && name == "") || inline {
-			ft := sf.Type
-			if ft.Kind() == reflect.Pointer {
-				ft = ft.Elem()
-			}
-			if ft.Kind() == reflect.Struct {
-				indexStructFieldsInto(ft, idxPath, out)
-				continue
-			}
-		}
-		if !sf.IsExported() {
-			continue
-		}
-		if name == "" {
-			name = strings.ToLower(sf.Name)
-		}
-		if _, exists := out[name]; !exists {
-			out[name] = idxPath
-		}
-	}
-}
-
-func parseFieldTag(sf reflect.StructField) (name string, skip bool, inline bool) {
-	tag := sf.Tag.Get("yaml")
-	if tag == "" {
-		tag = sf.Tag.Get("json")
-	}
-	if tag == "-" {
-		return "", true, false
-	}
-	name, rest, _ := strings.Cut(tag, ",")
-	for _, opt := range strings.Split(rest, ",") {
-		if opt == "inline" {
-			inline = true
-		}
-	}
-	return name, false, inline
-}
-
-// fieldByIndexPath walks path from v, allocating nil embedded struct pointers
-// on the way. It reports false instead of panicking when a nil pointer cannot
-// be set, which happens for a pointer to an unexported embedded struct.
-func fieldByIndexPath(v reflect.Value, path []int) (reflect.Value, bool) {
-	cur := v
-	for _, idx := range path {
-		if cur.Kind() == reflect.Pointer {
-			if cur.IsNil() {
-				if !cur.CanSet() {
-					return reflect.Value{}, false
-				}
-				cur.Set(reflect.New(cur.Type().Elem()))
-			}
-			cur = cur.Elem()
-		}
-		cur = cur.Field(idx)
-	}
-	return cur, true
-}
-
-// valueToGoAny converts val to plain Go values. A number becomes int64 or
-// uint64 when its lexeme is an integer that fits, otherwise float64 when the
-// float64's shortest decimal form has the same value as the lexeme (so 0.1
-// stays a float64). Any other number, such as 1e400, 1e-400, an integer past
-// uint64, or 9007199254740993.0, becomes json.Number with its exact lexeme
-// rather than losing value. With exactNumbers set, every number becomes
-// json.Number.
-func valueToGoAny(val ashlar.Value, exactNumbers bool) any {
-	switch val.Kind() {
-	case ashlar.KindNull:
-		return nil
-	case ashlar.KindBool:
-		b, _ := val.Bool()
-		return b
-	case ashlar.KindNumber:
-		lex, _ := val.NumberLexeme()
-		if exactNumbers {
-			return json.Number(lex)
-		}
-		if i, err := val.Int64(); err == nil {
-			return i
-		}
-		if u, err := val.Uint64(); err == nil {
-			return u
-		}
-		if f, err := val.Float64(); err == nil && sameDecimal(string(lex), strconv.FormatFloat(f, 'g', -1, 64)) {
-			return f
-		}
-		return json.Number(lex)
-	case ashlar.KindString:
-		s, _ := val.StringVal()
-		return s
-	case ashlar.KindArray:
-		elems := val.Elements()
-		out := make([]any, len(elems))
-		for i, el := range elems {
-			out[i] = valueToGoAny(el, exactNumbers)
-		}
-		return out
-	case ashlar.KindObject:
-		members := val.Members()
-		out := make(map[string]any, len(members))
-		for _, m := range members {
-			out[m.Key] = valueToGoAny(m.Value, exactNumbers)
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
 func (dc decoder) isSensitiveNode(val ashlar.Value, ptr ashlar.Pointer) bool {
 	return val.Provenance().Sensitive || ashlar.IsSensitivePath(dc.redactor, ptr, ptr.LastToken())
 }
@@ -471,42 +321,4 @@ func (dc decoder) validationErr(val ashlar.Value, ptr ashlar.Pointer, msg string
 		rawScalar,
 		val.Provenance().Sensitive,
 	)
-}
-
-// sameDecimal reports whether JSON number literals a and b denote the same
-// value. It compares sign, significant digits and decimal exponent as strings,
-// so a huge exponent costs nothing. A literal it cannot parse never matches.
-func sameDecimal(a, b string) bool {
-	na, okA := normalizeDecimal(a)
-	nb, okB := normalizeDecimal(b)
-	return okA && okB && na == nb
-}
-
-// normalizeDecimal reduces a JSON number literal to "sign digits e exponent",
-// where digits has no leading or trailing zeros and the value is
-// 0.digits × 10^exponent. Zero normalizes to "0" whatever its sign.
-func normalizeDecimal(lit string) (string, bool) {
-	sign := ""
-	if strings.HasPrefix(lit, "-") {
-		sign, lit = "-", lit[1:]
-	}
-	mant, expPart, hasExp := strings.Cut(strings.ToLower(lit), "e")
-	exp := 0
-	if hasExp {
-		e, err := strconv.Atoi(expPart)
-		if err != nil {
-			return "", false
-		}
-		exp = e
-	}
-	intPart, frac, _ := strings.Cut(mant, ".")
-	digits := intPart + frac
-	exp += len(intPart)
-	trimmed := strings.TrimLeft(digits, "0")
-	exp -= len(digits) - len(trimmed)
-	trimmed = strings.TrimRight(trimmed, "0")
-	if trimmed == "" {
-		return "0", true
-	}
-	return sign + trimmed + "e" + strconv.Itoa(exp), true
 }

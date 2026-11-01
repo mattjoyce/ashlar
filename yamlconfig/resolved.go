@@ -42,6 +42,18 @@ func (r Resolved) SourceHash() string {
 // source-located ashlar.ErrUnknownField diagnostics. Decode errors redact
 // values using only the sensitivity frozen at resolution time, so they follow
 // the same CompositionPolicy.Redactor as every other Resolved report.
+//
+// Unknown keys are rejected before dst is written, so that failure leaves dst
+// untouched. Any other failure, such as a value of the wrong type or a custom
+// unmarshaler error, is found while decoding and can leave dst partly
+// written. When all-or-nothing matters, decode into a fresh value and assign
+// it on success:
+//
+//	var next Config
+//	if err := res.DecodeStrict(&next); err != nil {
+//		return err
+//	}
+//	current = next
 func (r Resolved) DecodeStrict(dst any) error {
 	return decoder{redactor: frozenOnly}.decodeRoot(r.root, dst)
 }

@@ -34,6 +34,11 @@ type jsonField struct {
 // encoding/json rejects fail with ashlar.ErrValidation, source-located where
 // the failing value can be identified. Value-type pre-checks only locate
 // errors: an input encoding/json accepts is never rejected for its type.
+//
+// Unknown keys are rejected before dst is written. Any other failure is found
+// by encoding/json while decoding and can leave dst partly written, as with
+// encoding/json itself. When all-or-nothing matters, decode into a fresh
+// value and assign it on success.
 func (d Document) DecodeStrict(dst any) error {
 	rv := reflect.ValueOf(dst)
 	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
