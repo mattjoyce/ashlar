@@ -17,7 +17,7 @@ This specification defines the package boundaries, immutable value and provenanc
 4. **Node-Level Composition (`yamlconfig`):**
    Multi-fragment YAML configurations compose at the immutable `Value` node level under caller-declared per-path rules before decoding into Go structs. Go zero-value struct merging is never used.
 5. **Fail Fast, Fail Closed, Redact Secrets:**
-   Duplicate keys, trailing tokens/documents, unknown fields, unresolved required values, and include cycles fail all-or-nothing with source-located errors (`file:line:column`). Sensitive values are redacted in all `.Error()` strings, diagnostics, and provenance explanations.
+   Duplicate keys, trailing tokens/documents, unknown fields, unresolved required values, and include cycles fail with source-located errors (`file:line:column`). Loading and resolution are all-or-nothing: a failure returns no partial `Value` or `Resolved`. Decoding into a caller's Go value rejects unknown keys before writing anything; any other decode failure can leave the destination partly written, as with `encoding/json`, so callers that need all-or-nothing decode into a fresh value and assign it on success. Sensitive values are redacted in all `.Error()` strings, diagnostics, and provenance explanations.
    A required value that no layer set is the one failure without a source: there is no node to point at, and the requirement comes from the caller's `Required` list. Its error carries the JSON Pointer and a zero `Origin`. A required value that is null or blank is reported at its own origin.
    One exception: YAML syntax errors the parser rejects (malformed tokens, bad indentation, unclosed collections) are located `file:line`. yaml.v3 reports a line but no column, and for parser errors the line can be where the enclosing construct starts. Ashlar reports that line and never guesses a column. JSON syntax errors carry a full `file:line:column`.
 
@@ -361,6 +361,8 @@ func (r Resolved) Root() ashlar.Value
 func (r Resolved) Files() []string
 func (r Resolved) SourceHash() (string, error)
 // DecodeStrict and DecodeValueStrict decode into dst under these rules:
+//   - Unknown keys anywhere in the value are rejected before dst is written, using the
+//     same field index as decoding. Other failures can leave dst partly written.
 //   - Custom unmarshalers. null zeroes the target. A number goes to json.Unmarshaler
 //     when the type has one (so *big.Int accepts an unquoted integer); it receives the
 //     stored JSON number lexeme, which is the normalized spelling (YAML 0x1F arrives as
