@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -282,12 +283,12 @@ func TestDecodeTextUnmarshalerTargets(t *testing.T) {
 			name: "rejected_text", doc: "level: loud\n", newDst: newDst,
 			err: &locatedWant{
 				kind: ashlar.ErrValidation, ptr: "/level", loc: "config.yaml:1:8",
-				contains: `unknown log level "loud"`, is: errUnknownLevel,
+				contains: `cannot parse value as yamlconfig_test.logLevel: unknown log level "loud"`, is: errUnknownLevel,
 			},
 		},
 		{
 			name: "number_for_text", doc: "level: 3\n", newDst: newDst,
-			err: validationAt("/level", "config.yaml:1:8", "expected string for yamlconfig_test.logLevel"),
+			err: validationAt("/level", "config.yaml:1:8", "expected string for yamlconfig_test.logLevel, got number"),
 		},
 		{
 			name: "rejected_slice_element", doc: "levels: [info, nope]\n", newDst: newDst,
@@ -420,11 +421,11 @@ func TestDecodeDurationTargets(t *testing.T) {
 		},
 		{
 			name: "unparseable", doc: "timeout: soon\n", newDst: newDst,
-			err: validationAt("/timeout", "config.yaml:1:10", `invalid duration "soon"`),
+			err: validationAt("/timeout", "config.yaml:1:10", `cannot parse value as time.Duration: time: invalid duration "soon"`),
 		},
 		{
 			name: "bare_number", doc: "timeout: 30\n", newDst: newDst,
-			err: validationAt("/timeout", "config.yaml:1:10", "expected duration string"),
+			err: validationAt("/timeout", "config.yaml:1:10", "expected string for time.Duration, got number"),
 		},
 		{
 			name: "bad_slice_element", doc: "timeouts: [1s, later]\n", newDst: newDst,
@@ -659,5 +660,91 @@ func TestDecodeIntoAnyKeepsUnrepresentableNumbers(t *testing.T) {
 				t.Errorf("map = %#v, want %#v", asMap, want)
 			}
 		})
+	}
+}
+
+// dualLevel implements both TextUnmarshaler and json.Unmarshaler and records
+// which one ran, so the dispatch rule is observable.
+type dualLevel struct{ via, text string }
+
+// UnmarshalText records a text call.
+func (d *dualLevel) UnmarshalText(text []byte) error {
+	d.via, d.text = "text", string(text)
+	return nil
+}
+
+// UnmarshalJSON records a JSON call.
+func (d *dualLevel) UnmarshalJSON(data []byte) error {
+	d.via, d.text = "json", string(data)
+	return nil
+}
+
+// bigTargets holds math/big destinations and a dual-interface type.
+type bigTargets struct {
+	Int      *big.Int   `yaml:"int"`
+	IntValue big.Int    `yaml:"int_value"`
+	Float    *big.Float `yaml:"float"`
+	Dual     dualLevel  `yaml:"dual"`
+}
+
+// TestDecodeNumberDispatch checks the custom unmarshaler dispatch rule. A
+// number goes to json.Unmarshaler when the type has one, so *big.Int accepts
+// an unquoted integer. A string still goes to TextUnmarshaler first. A type
+// with only TextUnmarshaler, such as big.Float, still rejects numbers.
+func TestDecodeNumberDispatch(t *testing.T) {
+	t.Parallel()
+
+	newDst := func() any { return new(bigTargets) }
+	huge, _ := new(big.Int).SetString("123456789012345678901234567890", 10)
+	thirtyOne := big.NewInt(31)
+	runDecodeCases(t, []decodeCase{
+		{
+			name: "big_int_number", doc: "int: 123456789012345678901234567890\n", newDst: newDst,
+			want: &bigTargets{Int: huge},
+		},
+		{
+			name: "big_int_quoted", doc: "int: \"123456789012345678901234567890\"\n", newDst: newDst,
+			want: &bigTargets{Int: huge},
+		},
+		{
+			// The JSON unmarshaler receives the stored, normalized lexeme.
+			name: "big_int_hex_normalized", doc: "int: 0x1F\n", newDst: newDst,
+			want: &bigTargets{Int: thirtyOne},
+		},
+		{
+			name: "big_int_value_field", doc: "int_value: 31\n", newDst: newDst,
+			want: &bigTargets{IntValue: *big.NewInt(31)},
+		},
+		{
+			name: "big_int_fraction_rejected", doc: "int: 1.5\n", newDst: newDst,
+			err: validationAt("/int", "config.yaml:1:6", "cannot parse value as big.Int"),
+		},
+		{
+			name: "big_float_number_rejected", doc: "float: 1.5\n", newDst: newDst,
+			err: validationAt("/float", "config.yaml:1:8", "expected string for big.Float, got number"),
+		},
+		{
+			name: "dual_number_uses_json", doc: "dual: 42\n", newDst: newDst,
+			want: &bigTargets{Dual: dualLevel{via: "json", text: "42"}},
+		},
+		{
+			name: "dual_string_uses_text", doc: "dual: warn\n", newDst: newDst,
+			want: &bigTargets{Dual: dualLevel{via: "text", text: "warn"}},
+		},
+	})
+}
+
+// TestDecodeNumberIntoPopulatedBigInt checks that a number replaces the value
+// of an already-allocated *big.Int rather than allocating a new one.
+func TestDecodeNumberIntoPopulatedBigInt(t *testing.T) {
+	t.Parallel()
+	dir := writeYAMLFile(t, "config.yaml", "int: 7\n")
+	existing := big.NewInt(99)
+	dst := bigTargets{Int: existing}
+	if err := yamlconfig.DecodeValueStrict(readYAMLFile(t, dir, "config.yaml"), &dst); err != nil {
+		t.Fatalf("decode error = %v", err)
+	}
+	if dst.Int != existing || existing.Int64() != 7 {
+		t.Errorf("Int = %p (%v), want the existing pointer %p set to 7", dst.Int, dst.Int, existing)
 	}
 }

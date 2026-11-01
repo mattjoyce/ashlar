@@ -29,10 +29,12 @@ type decoder struct {
 // DecodeValueStrict decodes an immutable ashlar.Value tree into dst (which must
 // be a non-nil pointer), honoring "yaml" (and fallback "json") struct tags,
 // parsing time.Duration strings, and rejecting unknown struct fields with
-// source-located ashlar.ErrUnknownField diagnostics. Decode errors redact a
-// node's value when its provenance is marked sensitive or DefaultRedactor
-// classifies its pointer, so values that were never resolved under a policy
-// are still protected.
+// source-located ashlar.ErrUnknownField diagnostics. Custom unmarshalers are
+// dispatched as tryCustomUnmarshaler describes. Error messages name the target
+// type and wrap the parser's own error, as Go libraries do. Decode errors
+// redact a node's value when its provenance is marked sensitive or
+// DefaultRedactor classifies its pointer, so values that were never resolved
+// under a policy are still protected.
 func DecodeValueStrict(val ashlar.Value, dst any) error {
 	return decoder{}.decodeRoot(val, dst)
 }
@@ -95,59 +97,79 @@ func (dc decoder) decodeInto(val ashlar.Value, ptr ashlar.Pointer, dst reflect.V
 	return dc.validationErr(val, ptr, fmt.Sprintf("unsupported destination type %s", dst.Type()), nil)
 }
 
+// tryCustomUnmarshaler handles time.Duration and types with their own
+// unmarshalers. Failures follow Go convention: Ashlar's message names the
+// target type, and the parser's own error is wrapped as the cause, so its text
+// (which may quote the value) appears after it. A node the redactor classifies
+// as sensitive gets a redacted message and no cause.
+//
+// Dispatch: null never reaches here (decodeInto zeroes it). A number goes to
+// json.Unmarshaler when the type has one, because the type then accepts JSON
+// numbers. Every other kind goes to encoding.TextUnmarshaler first, then
+// json.Unmarshaler. A type with only a TextUnmarshaler rejects numbers, bools
+// and containers. The chosen method's error is final; there is no fallback.
 func (dc decoder) tryCustomUnmarshaler(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) (bool, error) {
 	if dst.Type() == durationType {
 		s, ok := val.StringVal()
 		if !ok {
-			return true, dc.validationErr(val, ptr, "expected duration string", nil)
+			return true, dc.validationErr(val, ptr, fmt.Sprintf("expected string for %s, got %s", dst.Type(), val.Kind()), nil)
 		}
 		d, err := time.ParseDuration(s)
 		if err != nil {
-			if dc.isSensitiveNode(val, ptr) {
-				return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid duration value %s", ashlar.RedactedLiteral), nil)
-			}
-			return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid duration %q", s), nil)
+			return true, dc.parseErr(val, ptr, dst.Type(), dc.isSensitiveNode(val, ptr), err)
 		}
 		dst.SetInt(int64(d))
 		return true, nil
 	}
-	if dst.CanAddr() {
-		addr := dst.Addr()
-		if addr.Type().Implements(textUnmarshalerType) {
-			s, ok := val.StringVal()
-			if !ok {
-				return true, dc.validationErr(val, ptr, fmt.Sprintf("expected string for %s", dst.Type()), nil)
-			}
-			u := addr.Interface().(encoding.TextUnmarshaler)
-			if err := u.UnmarshalText([]byte(s)); err != nil {
-				if dc.isSensitiveNode(val, ptr) {
-					return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
-				}
-				return true, dc.validationErr(val, ptr, err.Error(), err)
-			}
-			return true, nil
+	if !dst.CanAddr() {
+		return false, nil
+	}
+	addr := dst.Addr()
+	isText := addr.Type().Implements(textUnmarshalerType)
+	isJSON := addr.Type().Implements(jsonUnmarshalerType)
+	switch {
+	case isJSON && (val.Kind() == ashlar.KindNumber || !isText):
+		return true, dc.callJSONUnmarshaler(val, ptr, dst.Type(), addr.Interface().(json.Unmarshaler))
+	case isText:
+		s, ok := val.StringVal()
+		if !ok {
+			return true, dc.validationErr(val, ptr, fmt.Sprintf("expected string for %s, got %s", dst.Type(), val.Kind()), nil)
 		}
-		if addr.Type().Implements(jsonUnmarshalerType) {
-			// Numbers go in as json.Number so the unmarshaler receives the
-			// exact source lexeme, not a re-marshalled float64.
-			raw, err := json.Marshal(valueToGoAny(val, true))
-			if err != nil {
-				if dc.subtreeSensitive(val, ptr) {
-					return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
-				}
-				return true, dc.validationErr(val, ptr, err.Error(), err)
-			}
-			u := addr.Interface().(json.Unmarshaler)
-			if err := u.UnmarshalJSON(raw); err != nil {
-				if dc.subtreeSensitive(val, ptr) {
-					return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
-				}
-				return true, dc.validationErr(val, ptr, err.Error(), err)
-			}
-			return true, nil
+		if err := addr.Interface().(encoding.TextUnmarshaler).UnmarshalText([]byte(s)); err != nil {
+			return true, dc.parseErr(val, ptr, dst.Type(), dc.isSensitiveNode(val, ptr), err)
 		}
+		return true, nil
 	}
 	return false, nil
+}
+
+// callJSONUnmarshaler hands val to u as JSON. Numbers go in as json.Number, so
+// u receives the stored JSON number lexeme rather than a re-marshalled float64.
+// The stored lexeme is the normalized JSON spelling, so YAML 0x1F arrives as
+// 31.
+func (dc decoder) callJSONUnmarshaler(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type, u json.Unmarshaler) error {
+	sensitive := dc.subtreeSensitive(val, ptr)
+	raw, err := json.Marshal(valueToGoAny(val, true))
+	if err != nil {
+		if sensitive {
+			return dc.validationErr(val, ptr, fmt.Sprintf("cannot prepare value for %s: %s", t, ashlar.RedactedLiteral), nil)
+		}
+		return dc.validationErr(val, ptr, fmt.Sprintf("cannot prepare value for %s", t), err)
+	}
+	if err := u.UnmarshalJSON(raw); err != nil {
+		return dc.parseErr(val, ptr, t, sensitive, err)
+	}
+	return nil
+}
+
+// parseErr reports that a parser rejected val. For a sensitive node the
+// message is redacted and the cause dropped, since the cause can quote the
+// value.
+func (dc decoder) parseErr(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type, sensitive bool, cause error) error {
+	if sensitive {
+		return dc.validationErr(val, ptr, fmt.Sprintf("cannot parse value as %s: %s", t, ashlar.RedactedLiteral), nil)
+	}
+	return dc.validationErr(val, ptr, fmt.Sprintf("cannot parse value as %s", t), cause)
 }
 
 func (dc decoder) decodeStruct(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {

@@ -100,7 +100,7 @@ var (
 )
 
 // Error is a structured, source-located diagnostic error supporting errors.Is and errors.As.
-// Error messages never contain raw secret values; sensitive values are replaced via RedactedLiteral.
+// Error messages never contain values classified as sensitive; those are replaced via RedactedLiteral.
 type Error struct {
 	Kind    error      // Sentinel category (e.g., ErrSyntax, ErrSchema, ErrComposition, ErrValidation)
 	Pointer Pointer    // RFC 6901 JSON Pointer within the document, when applicable
@@ -351,6 +351,19 @@ type Resolved struct {
 func (r Resolved) Root() ashlar.Value
 func (r Resolved) Files() []string
 func (r Resolved) SourceHash() (string, error)
+// DecodeStrict and DecodeValueStrict decode into dst under these rules:
+//   - Custom unmarshalers. null zeroes the target. A number goes to json.Unmarshaler
+//     when the type has one (so *big.Int accepts an unquoted integer); it receives the
+//     stored JSON number lexeme, which is the normalized spelling (YAML 0x1F arrives as
+//     31). Every other kind goes to encoding.TextUnmarshaler first, then
+//     json.Unmarshaler. A type with only TextUnmarshaler (big.Float, big.Rat, net.IP)
+//     rejects numbers, so quote them. The chosen method's error is final.
+//   - Error messages follow Go convention. Ashlar's text names the target type, and a
+//     parser's own error is wrapped as the cause, so its text (which may quote the
+//     value) follows: `cannot parse value as time.Duration: time: invalid duration
+//     "15 seconds"`. A node classified as sensitive, by its frozen provenance or the
+//     redactor, gets a redacted message and no cause. Only classified values are
+//     protected; a secret under a key the redactor does not recognize is not.
 func (r Resolved) DecodeStrict(dst any) error
 func (r Resolved) Explain(ptr ashlar.Pointer) string
 func (r Resolved) ExplainAll() []ashlar.FieldProvenance
