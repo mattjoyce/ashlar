@@ -60,30 +60,45 @@ struct above:
 - **Closedness.** An inline map opens only its own struct to extra keys. Every
   struct without one stays closed and rejects unknown keys with
   `ErrUnknownField`. That includes structs decoded inside catch-all entries.
+- **Tag parsing.** Unchanged. Ashlar reads the `yaml` tag first, falls back to
+  the `json` tag, and `-` excludes the field. If a name is given alongside
+  `inline` (`yaml:"overrides,inline"`), it is ignored, as in yaml.v3, and the
+  field is still the catch-all.
 - **Eligible fields.** Only an exported field of map kind declared directly on
   the struct can be the catch-all. An unexported inline map is ignored, like
-  any unexported field, so the struct stays closed. Each of these fails with
-  `ErrValidation`:
-  - an exported inline pointer-to-map (yaml.v3 also rejects it)
+  any unexported field, so the struct stays closed. An anonymous map with no
+  `,inline` tag is not a catch-all. It stays a named field under its lowercased
+  type name, as it does today. Each of these fails with `ErrValidation`:
+  - an exported inline pointer-to-map
   - more than one inline map on one struct
-  - an inline map inside an embedded or inline struct. yaml.v3 doesn't promote
-    these, and Ashlar rejects them rather than ignore them.
-  None of these cases ever falls back to a wrapper key named after the field.
+  - an inline map inside an embedded or inline struct, including an inline
+    pointer-to-struct. yaml.v3 doesn't promote these and silently keeps the
+    outer struct closed. Ashlar rejects them so the mistake is visible. This is
+    checked while the outer struct is decoded, so the same inner type decoded
+    on its own is valid.
+  yaml.v3 panics on the first two cases and on a non-string key. AGENTS.md
+  forbids panics in library code, so Ashlar returns an error instead. None of
+  these cases ever falls back to a wrapper key named after the field. Each error
+  is reported at the pointer and origin of the struct mapping being decoded (for
+  Ductile, `/timeouts`), and the message names the Go type and the field.
 - **Key type.** The map key must be string-kinded, which matches `decodeMap`. This
   is a deliberate extension of yaml.v3, which requires exactly `string`. Any other
   key kind fails with `ErrValidation`.
 - **When validation runs.** These rules are checked each time a struct mapping is
   decoded, including empty mappings and mappings with only named keys. A null
-  struct value and an omitted struct field behave as they do today. Ashlar does
-  not add a separate pass over the type.
+  struct value and an omitted struct field produce no error, because no mapping
+  is decoded there. yaml.v3 behaves the same way. Ashlar does not add a
+  separate pass over the type.
 - **Element decoding.** Each entry goes through the existing `decodeInto` at its
   flat pointer. A bad value gets a `file:line:col` error, and a sensitive value
   gets redacted. `cpu: null` creates a `"cpu": 0` entry, the same as
   `decodeMap` today.
-- **Destination reuse.** This follows yaml.v3. A nil map is allocated when the
-  first unmatched key arrives. With no unmatched keys, the field is left as it
-  was. Unmatched keys are added to a map that already has entries and do not
-  replace it.
+- **Destination reuse.** This matches `decodeMap`, so one decoder has one rule
+  for maps. With no unmatched keys, the field is left as it was, so a nil map
+  stays nil. When at least one unmatched key arrives, the catch-all is replaced
+  with a fresh map holding only those entries. yaml.v3 adds to an existing map
+  instead, but Ashlar's named map fields already differ from yaml.v3 in the
+  same way.
 - **Provenance and composition.** No change. Origins and sensitivity live on the
   `ashlar.Value` tree by document pointer, so an entry keeps its flat path
   (`/timeouts/cpu`, not `/timeouts/overrides/cpu`). Include merging already runs
@@ -92,20 +107,24 @@ struct above:
 
 ## Acceptance criteria
 
-- [ ] `SPEC.md` §3.4 (YAML loader) documents the catch-all rules and the one
-      exception they make to unknown-field rejection. The `DecodeValueStrict`
-      and `DecodeStrict` doc comments say the same. JSON-contract decoding (§3.2)
-      is unchanged.
+- [ ] `SPEC.md` §3.4 gains a paragraph on how `DecodeStrict` and
+      `DecodeValueStrict` handle tags: `yaml` first with `json` as fallback,
+      `-`, inline struct promotion, unknown-field rejection, and the catch-all
+      rules. It lists `DecodeValueStrict`, which SPEC.md doesn't mention today.
+      The two doc comments say the same. JSON-contract decoding (§3.2) is
+      unchanged.
 - [ ] Ductile's shape `yaml:",inline,omitempty"` decodes `poll`, `handle`, and
       `cpu` correctly.
-- [ ] Tag handling. `json:",inline"` works as the fallback, a YAML tag takes
-      precedence over a JSON tag, and `yaml:"-"` excludes the field. No general
-      validation of tag options is added.
+- [ ] Tag handling, as a regression check. `json:",inline"` works as the
+      fallback, a YAML tag takes precedence over a JSON tag, `yaml:"-"`
+      excludes the field, and `yaml:"overrides,inline"` is still the catch-all.
+      No general validation of tag options is added.
 - [ ] A named field wins over the catch-all, including a field promoted from an
       inline struct.
 - [ ] With no extra keys, a nil map stays nil and a map that already has entries
-      is unchanged. With extra keys, those entries are added to the existing
-      entries.
+      is unchanged. With extra keys, the map holds exactly those entries.
+- [ ] A catch-all keyed by a named string type (`type Command string`) decodes
+      its entries.
 - [ ] An omitted `cpu` creates no entry. Both `cpu: null` and `cpu: 0s` create a
       zero-duration entry. `Root().PresenceAt` tells omitted, null, and present
       apart at the flat pointer.
@@ -113,18 +132,19 @@ struct above:
 - [ ] A sensitive entry stays redacted in error strings and provenance output.
       This holds under the default key classification and under a
       caller-supplied redactor.
-- [ ] Each case fails with `ErrValidation`, including on an empty mapping:
-      two inline maps, a non-string key kind, an inline pointer-to-map, and an
-      inline map inside an inline struct. An unexported inline map leaves the
-      struct closed.
+- [ ] Each case fails with `ErrValidation`, located at the struct mapping's
+      pointer, including on an empty mapping: two inline maps, a non-string key
+      kind, an inline pointer-to-map, and an inline map inside an inline
+      struct. The same struct at a `null` or omitted position produces no error.
+      An unexported inline map leaves the struct closed.
 - [ ] A struct inside a catch-all entry still rejects unknown keys. A sibling
       struct without a catch-all still rejects them too.
 - [ ] After a successful decode, `Resolved.Explain` reports the `file:line:col`
       origin of an entry at its flat pointer. One key contains `/` or `~` to
       check RFC 6901 escaping.
-- [ ] Two included files contribute different extra keys and both override one
-      shared key. The test resolves and decodes them, then checks the entries
-      kept, the winning value, and the superseded origin of the shared key.
+- [ ] Composition regression check, with no new rules. An included file
+      overrides one extra key, and the decoded entry has the winning value and
+      the winning origin.
 - [ ] A struct shaped like Ductile's (`Overrides map[string]time.Duration` tagged
       inline) changes behavior, and the commit message calls this out.
       - `overrides: {cpu: 15s}` used to fill the map through a wrapper key nobody
@@ -163,3 +183,17 @@ struct above:
   change opens a deliberate exception to strict decoding, so it shouldn't land
   until syntax-error location, redaction and provenance have real tests.
   (by @claude)
+
+- 2026-11-01: A Fable review found the card accurate about yaml.v3 and the
+  current code, and safe for Ductile. Ductile has no `overrides:` wrapper, and
+  `config show --effective` takes its sources from the struct, not from Ashlar
+  provenance. It found two places where two engineers would build different
+  things. Decisions: (1) destination reuse now matches `decodeMap`, which
+  replaces the map, instead of yaml.v3, which adds to it, so Ashlar's decoder
+  has one rule for maps; (2) shape errors are located at the struct mapping.
+  Also added: a stated tag-parsing rule; a positive test for named string key
+  types; a SPEC criterion that can actually be met, since §3.4 had no tag rules
+  to amend; a note that yaml.v3 panics where Ashlar returns errors; the
+  anonymous-map and inline-pointer edge cases; and a test that null and
+  omitted positions produce no error. The include-merge test is trimmed to a
+  regression check. (by @claude)
