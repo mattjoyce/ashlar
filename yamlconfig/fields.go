@@ -68,6 +68,61 @@ func checkKnownKeys(val ashlar.Value, ptr ashlar.Pointer, t reflect.Type) error 
 	return nil
 }
 
+// decodeStruct decodes the mapping val into struct dst. Named and promoted
+// keys go to their fields; any other key goes to the catch-all, when the
+// struct has one, or fails as unknown.
+func (dc decoder) decodeStruct(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
+	if val.Kind() != ashlar.KindObject {
+		return dc.validationErr(val, ptr, fmt.Sprintf("expected mapping for %s, got %s", dst.Type(), val.Kind()), nil)
+	}
+	fields := indexStructFields(dst.Type())
+	if fields.shapeErr != "" {
+		return fields.shapeError(val, ptr)
+	}
+	var extra []ashlar.Member
+	for _, m := range val.Members() {
+		idxPath, ok := fields.keys[m.Key]
+		if !ok {
+			if fields.catchAll < 0 {
+				return unknownFieldErr(ptr, m)
+			}
+			extra = append(extra, m)
+			continue
+		}
+		targetField, ok := fieldByIndexPath(dst, idxPath)
+		if !ok {
+			return dc.validationErr(
+				m.Value,
+				ptr.Child(m.Key),
+				fmt.Sprintf("cannot set field %q through a nil pointer to an unexported embedded struct in %s", m.Key, dst.Type()),
+				nil,
+			)
+		}
+		if !targetField.CanSet() {
+			return dc.validationErr(
+				m.Value,
+				ptr.Child(m.Key),
+				fmt.Sprintf("cannot set field %q in %s: it is unexported", m.Key, dst.Type()),
+				nil,
+			)
+		}
+		if err := dc.decodeInto(m.Value, ptr.Child(m.Key), targetField); err != nil {
+			return err
+		}
+	}
+	// Keys no named field claims fill the catch-all, replacing it as decodeMap
+	// replaces any map. With none, the catch-all is left as it was.
+	if len(extra) > 0 {
+		catchAll := dst.Field(fields.catchAll)
+		out, err := dc.buildMap(extra, ptr, catchAll.Type())
+		if err != nil {
+			return err
+		}
+		catchAll.Set(out)
+	}
+	return nil
+}
+
 // unknownFieldErr reports key m as unknown in the struct mapping at ptr.
 func unknownFieldErr(ptr ashlar.Pointer, m ashlar.Member) error {
 	return ashlar.NewError(
