@@ -4,7 +4,7 @@ An **ashlar** is a stone dressed and squared so it fits precisely with other sto
 
 **Ashlar** is a Go library for strict document reading, structural schema validation, and traceable runtime configuration composition. Configuration fragments, environment overrides, and explicit flags compose predictably into a validated configuration whose effective values remain traceable to their sources.
 
-> **Status:** v0.1.0. Pre-1.0: the public surface in `SPEC.md` is implemented and reviewed, but may still change before v1.0.0.
+> **Status:** v0.2.0. Pre-1.0: the public surface in `SPEC.md` is implemented and reviewed, but may still change before v1.0.0.
 
 ---
 
