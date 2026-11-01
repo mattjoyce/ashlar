@@ -1,0 +1,30 @@
+# Runs the merge-grade gate from AGENTS.md section 4 (scripts/gate.sh).
+name: gate
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install gate tools
+        run: |
+          go install golang.org/x/tools/cmd/goimports@v0.42.0
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.10.1
+
+      - name: Gate
+        run: bash scripts/gate.sh
