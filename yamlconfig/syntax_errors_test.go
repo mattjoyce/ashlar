@@ -311,3 +311,16 @@ func TestSyntaxErrorInIncludedFileReportsChildLocationAndChain(t *testing.T) {
 		})
 	}
 }
+
+// TestSyntaxErrorWithoutLineFallsBackToFile pins the fallback for reading the
+// line out of yaml.v3's error text. yaml.v3 reports a control character with
+// no "line N:" in its message, so the error is still ErrSyntax and is located
+// at the file alone, with no guessed line.
+func TestSyntaxErrorWithoutLineFallsBackToFile(t *testing.T) {
+	t.Parallel()
+	dir := writeTree(t, map[string]string{"cfg.yaml": "token: " + plantedSecret + "\x01\n"})
+
+	_, err := yamlconfig.ReadFS(os.DirFS(dir), "cfg.yaml")
+
+	requireLocatedError(t, err, ashlar.ErrSyntax, "cfg.yaml", "", plantedSecret)
+}

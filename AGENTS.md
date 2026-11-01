@@ -39,6 +39,7 @@ Every design proposal, API boundary, and code review runs through **Hickey × Ar
 ### Error Handling & Safety
 - Wrap propagated errors with useful context (`fmt.Errorf("...: %w", err)`).
 - Use `errors.Is` and `errors.As` with exported sentinel or structured error types; never inspect errors by string matching.
+  One narrow exception: a third-party error that exposes no structured position may have its text read to extract a position for display (yaml.v3's "line N:"). The text must never drive classification or control flow, and a failed match must fall back to a coarser location, never a guess.
 - Separate document/syntax errors, structural/schema errors, composition errors, and application validation errors clearly.
 - Never `panic` in library code. Never log directly from library code or log-and-return the same error; return structured, redactable errors to the caller.
 - Handle every error or explicitly comment why it is safe to ignore.
