@@ -17,11 +17,25 @@ var (
 	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
 )
 
+// decoder carries the redactor that classifies sensitive nodes for decode
+// error messages. A node is sensitive when its frozen provenance flag is set or
+// the redactor classifies its pointer; a nil redactor means DefaultRedactor.
+type decoder struct {
+	redactor ashlar.Redactor
+}
+
 // DecodeValueStrict decodes an immutable ashlar.Value tree into dst (which must
 // be a non-nil pointer), honoring "yaml" (and fallback "json") struct tags,
 // parsing time.Duration strings, and rejecting unknown struct fields with
-// source-located ashlar.ErrUnknownField diagnostics.
+// source-located ashlar.ErrUnknownField diagnostics. Decode errors redact a
+// node's value when its provenance is marked sensitive or DefaultRedactor
+// classifies its pointer, so values that were never resolved under a policy
+// are still protected.
 func DecodeValueStrict(val ashlar.Value, dst any) error {
+	return decoder{}.decodeRoot(val, dst)
+}
+
+func (dc decoder) decodeRoot(val ashlar.Value, dst any) error {
 	rv := reflect.ValueOf(dst)
 	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
 		return ashlar.NewError(
@@ -41,10 +55,10 @@ func DecodeValueStrict(val ashlar.Value, dst any) error {
 			nil,
 		)
 	}
-	return decodeInto(val, ashlar.RootPointer, rv.Elem())
+	return dc.decodeInto(val, ashlar.RootPointer, rv.Elem())
 }
 
-func decodeInto(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
+func (dc decoder) decodeInto(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
 	if val.IsNull() {
 		dst.Set(reflect.Zero(dst.Type()))
 		return nil
@@ -54,43 +68,43 @@ func decodeInto(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
 		if dst.IsNil() {
 			dst.Set(reflect.New(dst.Type().Elem()))
 		}
-		return decodeInto(val, ptr, dst.Elem())
+		return dc.decodeInto(val, ptr, dst.Elem())
 	}
 
-	if ok, err := tryCustomUnmarshaler(val, ptr, dst); ok {
+	if ok, err := dc.tryCustomUnmarshaler(val, ptr, dst); ok {
 		return err
 	}
 
 	switch dst.Kind() {
 	case reflect.Struct:
-		return decodeStruct(val, ptr, dst)
+		return dc.decodeStruct(val, ptr, dst)
 	case reflect.Map:
-		return decodeMap(val, ptr, dst)
+		return dc.decodeMap(val, ptr, dst)
 	case reflect.Slice:
-		return decodeSlice(val, ptr, dst)
+		return dc.decodeSlice(val, ptr, dst)
 	case reflect.Interface:
 		if dst.NumMethod() == 0 {
 			dst.Set(reflect.ValueOf(valueToGoAny(val)))
 			return nil
 		}
 	default:
-		return decodeScalar(val, ptr, dst)
+		return dc.decodeScalar(val, ptr, dst)
 	}
-	return validationErr(val, ptr, fmt.Sprintf("unsupported destination type %s", dst.Type()), nil)
+	return dc.validationErr(val, ptr, fmt.Sprintf("unsupported destination type %s", dst.Type()), nil)
 }
 
-func tryCustomUnmarshaler(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) (bool, error) {
+func (dc decoder) tryCustomUnmarshaler(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) (bool, error) {
 	if dst.Type() == durationType {
 		s, ok := val.StringVal()
 		if !ok {
-			return true, validationErr(val, ptr, "expected duration string", nil)
+			return true, dc.validationErr(val, ptr, "expected duration string", nil)
 		}
 		d, err := time.ParseDuration(s)
 		if err != nil {
-			if isSensitiveNode(val, ptr) {
-				return true, validationErr(val, ptr, fmt.Sprintf("invalid duration value %s", ashlar.RedactedLiteral), nil)
+			if dc.isSensitiveNode(val, ptr) {
+				return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid duration value %s", ashlar.RedactedLiteral), nil)
 			}
-			return true, validationErr(val, ptr, fmt.Sprintf("invalid duration %q", s), nil)
+			return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid duration %q", s), nil)
 		}
 		dst.SetInt(int64(d))
 		return true, nil
@@ -100,31 +114,31 @@ func tryCustomUnmarshaler(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Valu
 		if addr.Type().Implements(textUnmarshalerType) {
 			s, ok := val.StringVal()
 			if !ok {
-				return true, validationErr(val, ptr, fmt.Sprintf("expected string for %s", dst.Type()), nil)
+				return true, dc.validationErr(val, ptr, fmt.Sprintf("expected string for %s", dst.Type()), nil)
 			}
 			u := addr.Interface().(encoding.TextUnmarshaler)
 			if err := u.UnmarshalText([]byte(s)); err != nil {
-				if isSensitiveNode(val, ptr) {
-					return true, validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
+				if dc.isSensitiveNode(val, ptr) {
+					return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
 				}
-				return true, validationErr(val, ptr, err.Error(), err)
+				return true, dc.validationErr(val, ptr, err.Error(), err)
 			}
 			return true, nil
 		}
 		if addr.Type().Implements(jsonUnmarshalerType) {
 			raw, err := json.Marshal(valueToGoAny(val))
 			if err != nil {
-				if isSensitiveNode(val, ptr) {
-					return true, validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
+				if dc.isSensitiveNode(val, ptr) {
+					return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
 				}
-				return true, validationErr(val, ptr, err.Error(), err)
+				return true, dc.validationErr(val, ptr, err.Error(), err)
 			}
 			u := addr.Interface().(json.Unmarshaler)
 			if err := u.UnmarshalJSON(raw); err != nil {
-				if isSensitiveNode(val, ptr) {
-					return true, validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
+				if dc.isSensitiveNode(val, ptr) {
+					return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
 				}
-				return true, validationErr(val, ptr, err.Error(), err)
+				return true, dc.validationErr(val, ptr, err.Error(), err)
 			}
 			return true, nil
 		}
@@ -132,9 +146,9 @@ func tryCustomUnmarshaler(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Valu
 	return false, nil
 }
 
-func decodeStruct(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
+func (dc decoder) decodeStruct(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
 	if val.Kind() != ashlar.KindObject {
-		return validationErr(val, ptr, fmt.Sprintf("expected mapping for %s, got %s", dst.Type(), val.Kind()), nil)
+		return dc.validationErr(val, ptr, fmt.Sprintf("expected mapping for %s, got %s", dst.Type(), val.Kind()), nil)
 	}
 	fields := indexStructFields(dst.Type())
 	for _, m := range val.Members() {
@@ -149,25 +163,25 @@ func decodeStruct(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error
 			)
 		}
 		targetField := fieldByIndexPath(dst, idxPath)
-		if err := decodeInto(m.Value, ptr.Child(m.Key), targetField); err != nil {
+		if err := dc.decodeInto(m.Value, ptr.Child(m.Key), targetField); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func decodeMap(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
+func (dc decoder) decodeMap(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
 	if val.Kind() != ashlar.KindObject {
-		return validationErr(val, ptr, fmt.Sprintf("expected mapping for %s, got %s", dst.Type(), val.Kind()), nil)
+		return dc.validationErr(val, ptr, fmt.Sprintf("expected mapping for %s, got %s", dst.Type(), val.Kind()), nil)
 	}
 	if dst.Type().Key().Kind() != reflect.String {
-		return validationErr(val, ptr, "map key type must be string", nil)
+		return dc.validationErr(val, ptr, "map key type must be string", nil)
 	}
 	out := reflect.MakeMapWithSize(dst.Type(), val.Len())
 	elemType := dst.Type().Elem()
 	for _, m := range val.Members() {
 		elemVal := reflect.New(elemType).Elem()
-		if err := decodeInto(m.Value, ptr.Child(m.Key), elemVal); err != nil {
+		if err := dc.decodeInto(m.Value, ptr.Child(m.Key), elemVal); err != nil {
 			return err
 		}
 		out.SetMapIndex(reflect.ValueOf(m.Key).Convert(dst.Type().Key()), elemVal)
@@ -176,14 +190,14 @@ func decodeMap(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
 	return nil
 }
 
-func decodeSlice(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
+func (dc decoder) decodeSlice(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
 	if val.Kind() != ashlar.KindArray {
-		return validationErr(val, ptr, fmt.Sprintf("expected sequence for %s, got %s", dst.Type(), val.Kind()), nil)
+		return dc.validationErr(val, ptr, fmt.Sprintf("expected sequence for %s, got %s", dst.Type(), val.Kind()), nil)
 	}
 	elems := val.Elements()
 	out := reflect.MakeSlice(dst.Type(), len(elems), len(elems))
 	for i, el := range elems {
-		if err := decodeInto(el, ptr.Index(i), out.Index(i)); err != nil {
+		if err := dc.decodeInto(el, ptr.Index(i), out.Index(i)); err != nil {
 			return err
 		}
 	}
@@ -191,45 +205,45 @@ func decodeSlice(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error 
 	return nil
 }
 
-func decodeScalar(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
+func (dc decoder) decodeScalar(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
 	switch dst.Kind() {
 	case reflect.String:
 		s, ok := val.StringVal()
 		if !ok {
-			return validationErr(val, ptr, fmt.Sprintf("expected string, got %s", val.Kind()), nil)
+			return dc.validationErr(val, ptr, fmt.Sprintf("expected string, got %s", val.Kind()), nil)
 		}
 		dst.SetString(s)
 		return nil
 	case reflect.Bool:
 		b, ok := val.Bool()
 		if !ok {
-			return validationErr(val, ptr, fmt.Sprintf("expected boolean, got %s", val.Kind()), nil)
+			return dc.validationErr(val, ptr, fmt.Sprintf("expected boolean, got %s", val.Kind()), nil)
 		}
 		dst.SetBool(b)
 		return nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		i, err := val.Int64()
 		if err != nil || dst.OverflowInt(i) {
-			return validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
+			return dc.validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
 		}
 		dst.SetInt(i)
 		return nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		u, err := val.Uint64()
 		if err != nil || dst.OverflowUint(u) {
-			return validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
+			return dc.validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
 		}
 		dst.SetUint(u)
 		return nil
 	case reflect.Float32, reflect.Float64:
 		f, err := val.Float64()
 		if err != nil || dst.OverflowFloat(f) {
-			return validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
+			return dc.validationErr(val, ptr, fmt.Sprintf("expected %s, got %s", dst.Type(), val.Kind()), nil)
 		}
 		dst.SetFloat(f)
 		return nil
 	default:
-		return validationErr(val, ptr, fmt.Sprintf("unsupported scalar type %s", dst.Type()), nil)
+		return dc.validationErr(val, ptr, fmt.Sprintf("unsupported scalar type %s", dst.Type()), nil)
 	}
 }
 
@@ -338,11 +352,11 @@ func valueToGoAny(val ashlar.Value) any {
 	}
 }
 
-func isSensitiveNode(val ashlar.Value, ptr ashlar.Pointer) bool {
-	return val.Provenance().Sensitive || ashlar.IsSensitivePath(nil, ptr, ptr.LastToken())
+func (dc decoder) isSensitiveNode(val ashlar.Value, ptr ashlar.Pointer) bool {
+	return val.Provenance().Sensitive || ashlar.IsSensitivePath(dc.redactor, ptr, ptr.LastToken())
 }
 
-func validationErr(val ashlar.Value, ptr ashlar.Pointer, msg string, cause error) error {
+func (dc decoder) validationErr(val ashlar.Value, ptr ashlar.Pointer, msg string, cause error) error {
 	rawScalar := ""
 	if s, ok := val.StringVal(); ok {
 		rawScalar = s
@@ -355,7 +369,7 @@ func validationErr(val ashlar.Value, ptr ashlar.Pointer, msg string, cause error
 		val.Provenance().Effective,
 		msg,
 		cause,
-		nil,
+		dc.redactor,
 		rawScalar,
 		val.Provenance().Sensitive,
 	)
