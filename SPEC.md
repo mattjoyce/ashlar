@@ -174,6 +174,12 @@ type ProvenanceEntry struct {
 
 // Value is an immutable document or configuration node.
 // Numbers retain their exact source lexeme (e.g., "1", "1.0", "1e0", "9223372036854775807").
+// A number lexeme is always a JSON number literal. YAML spellings outside that grammar
+// (0x1F, 0o17, +1, 1_000, .5) keep their value but are stored in JSON decimal form.
+// YAML .inf and .nan have no JSON form and are rejected with a located ErrSyntax.
+// A plain YAML scalar that is a valid JSON number stays a number even when it
+// overflows float64 (1e400), so decoding it into a float fails instead of the
+// value silently becoming a string.
 // Objects preserve both key lookup and deterministic declaration/sorted iteration.
 type Value struct {
 	// Unexported fields ensure immutability.

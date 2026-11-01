@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -280,6 +281,14 @@ func convertScalarNode(ptr ashlar.Pointer, n *yaml.Node, prov ashlar.Provenance)
 	case "!!float":
 		return convertYAMLFloat(ptr, n, prov)
 	default:
+		// yaml.v3 resolves a plain float it cannot fit in a float64 (such as
+		// 1e400) to !!str. A plain, untagged scalar that is a valid JSON
+		// number is still a number, so keep it as one with its exact lexeme.
+		if n.ShortTag() == "!!str" && n.Style == 0 {
+			if v, err := ashlar.NumberValue(n.Value, prov); err == nil {
+				return v, nil
+			}
+		}
 		return ashlar.StringValue(n.Value, prov), nil
 	}
 }
@@ -297,12 +306,23 @@ func convertYAMLInt(ptr ashlar.Pointer, n *yaml.Node, prov ashlar.Provenance) (a
 	if err := n.Decode(&u64); err == nil {
 		return ashlar.NumberValue(strconv.FormatUint(u64, 10), prov)
 	}
-	return ashlar.Value{}, ashlar.NewError(
+	return ashlar.Value{}, scalarSyntaxErr(ptr, prov, "invalid YAML integer %q", n.Value)
+}
+
+// scalarSyntaxErr builds a located ErrSyntax whose message quotes the scalar's
+// source spelling. The spelling is scrubbed when DefaultRedactor classifies
+// ptr as sensitive; the loader has no caller policy yet, so the default rules
+// stand in.
+func scalarSyntaxErr(ptr ashlar.Pointer, prov ashlar.Provenance, format, raw string) error {
+	return ashlar.NewRedactedError(
 		ashlar.ErrSyntax,
 		ptr,
 		prov.Effective,
-		fmt.Sprintf("invalid YAML integer %q", n.Value),
+		fmt.Sprintf(format, raw),
 		nil,
+		nil,
+		raw,
+		prov.Sensitive,
 	)
 }
 
@@ -312,14 +332,12 @@ func convertYAMLFloat(ptr ashlar.Pointer, n *yaml.Node, prov ashlar.Provenance) 
 		return v, nil
 	}
 	var f64 float64
-	if err := n.Decode(&f64); err == nil {
-		return ashlar.NumberValue(strconv.FormatFloat(f64, 'g', -1, 64), prov)
+	if err := n.Decode(&f64); err != nil {
+		return ashlar.Value{}, scalarSyntaxErr(ptr, prov, "invalid YAML float %q", n.Value)
 	}
-	return ashlar.Value{}, ashlar.NewError(
-		ashlar.ErrSyntax,
-		ptr,
-		prov.Effective,
-		fmt.Sprintf("invalid YAML float %q", n.Value),
-		nil,
-	)
+	// Ashlar numbers are JSON numbers, which cannot be infinite or NaN.
+	if math.IsInf(f64, 0) || math.IsNaN(f64) {
+		return ashlar.Value{}, scalarSyntaxErr(ptr, prov, "YAML float %q is infinite or NaN, which Ashlar numbers cannot represent", n.Value)
+	}
+	return ashlar.NumberValue(strconv.FormatFloat(f64, 'g', -1, 64), prov)
 }

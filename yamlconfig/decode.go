@@ -15,6 +15,7 @@ var (
 	durationType        = reflect.TypeFor[time.Duration]()
 	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
+	jsonNumberType      = reflect.TypeFor[json.Number]()
 )
 
 // decoder carries the redactor that classifies sensitive nodes for decode
@@ -84,7 +85,7 @@ func (dc decoder) decodeInto(val ashlar.Value, ptr ashlar.Pointer, dst reflect.V
 		return dc.decodeSlice(val, ptr, dst)
 	case reflect.Interface:
 		if dst.NumMethod() == 0 {
-			dst.Set(reflect.ValueOf(valueToGoAny(val)))
+			dst.Set(reflect.ValueOf(valueToGoAny(val, false)))
 			return nil
 		}
 	default:
@@ -126,16 +127,18 @@ func (dc decoder) tryCustomUnmarshaler(val ashlar.Value, ptr ashlar.Pointer, dst
 			return true, nil
 		}
 		if addr.Type().Implements(jsonUnmarshalerType) {
-			raw, err := json.Marshal(valueToGoAny(val))
+			// Numbers go in as json.Number so the unmarshaler receives the
+			// exact source lexeme, not a re-marshalled float64.
+			raw, err := json.Marshal(valueToGoAny(val, true))
 			if err != nil {
-				if dc.isSensitiveNode(val, ptr) {
+				if dc.subtreeSensitive(val, ptr) {
 					return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
 				}
 				return true, dc.validationErr(val, ptr, err.Error(), err)
 			}
 			u := addr.Interface().(json.Unmarshaler)
 			if err := u.UnmarshalJSON(raw); err != nil {
-				if dc.isSensitiveNode(val, ptr) {
+				if dc.subtreeSensitive(val, ptr) {
 					return true, dc.validationErr(val, ptr, fmt.Sprintf("invalid %s value %s", dst.Type(), ashlar.RedactedLiteral), nil)
 				}
 				return true, dc.validationErr(val, ptr, err.Error(), err)
@@ -206,6 +209,12 @@ func (dc decoder) decodeSlice(val ashlar.Value, ptr ashlar.Pointer, dst reflect.
 }
 
 func (dc decoder) decodeScalar(val ashlar.Value, ptr ashlar.Pointer, dst reflect.Value) error {
+	if dst.Type() == jsonNumberType {
+		if lex, ok := val.NumberLexeme(); ok {
+			dst.SetString(string(lex))
+			return nil
+		}
+	}
 	switch dst.Kind() {
 	case reflect.String:
 		s, ok := val.StringVal()
@@ -314,7 +323,9 @@ func fieldByIndexPath(v reflect.Value, path []int) reflect.Value {
 	return cur
 }
 
-func valueToGoAny(val ashlar.Value) any {
+// valueToGoAny converts val to plain Go values. Numbers become int64, uint64
+// or float64, or json.Number holding the exact lexeme when exactNumbers is set.
+func valueToGoAny(val ashlar.Value, exactNumbers bool) any {
 	switch val.Kind() {
 	case ashlar.KindNull:
 		return nil
@@ -322,6 +333,9 @@ func valueToGoAny(val ashlar.Value) any {
 		b, _ := val.Bool()
 		return b
 	case ashlar.KindNumber:
+		if lex, ok := val.NumberLexeme(); ok && exactNumbers {
+			return json.Number(lex)
+		}
 		if i, err := val.Int64(); err == nil {
 			return i
 		}
@@ -337,14 +351,14 @@ func valueToGoAny(val ashlar.Value) any {
 		elems := val.Elements()
 		out := make([]any, len(elems))
 		for i, el := range elems {
-			out[i] = valueToGoAny(el)
+			out[i] = valueToGoAny(el, exactNumbers)
 		}
 		return out
 	case ashlar.KindObject:
 		members := val.Members()
 		out := make(map[string]any, len(members))
 		for _, m := range members {
-			out[m.Key] = valueToGoAny(m.Value)
+			out[m.Key] = valueToGoAny(m.Value, exactNumbers)
 		}
 		return out
 	default:
@@ -354,6 +368,26 @@ func valueToGoAny(val ashlar.Value) any {
 
 func (dc decoder) isSensitiveNode(val ashlar.Value, ptr ashlar.Pointer) bool {
 	return val.Provenance().Sensitive || ashlar.IsSensitivePath(dc.redactor, ptr, ptr.LastToken())
+}
+
+// subtreeSensitive reports whether val or any node beneath it is sensitive. A
+// custom unmarshaler that rejects a container can echo every value in it, so
+// one sensitive descendant is enough to withhold the whole message.
+func (dc decoder) subtreeSensitive(val ashlar.Value, ptr ashlar.Pointer) bool {
+	if dc.isSensitiveNode(val, ptr) {
+		return true
+	}
+	for i, el := range val.Elements() {
+		if dc.subtreeSensitive(el, ptr.Index(i)) {
+			return true
+		}
+	}
+	for _, m := range val.Members() {
+		if dc.subtreeSensitive(m.Value, ptr.Child(m.Key)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (dc decoder) validationErr(val ashlar.Value, ptr ashlar.Pointer, msg string, cause error) error {
