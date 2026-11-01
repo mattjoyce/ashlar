@@ -178,7 +178,35 @@ func (l *lexer) scanLiteral(start ashlar.SourcePos, ptr ashlar.Pointer, lit stri
 		}
 		l.advanceByte()
 	}
+	if err := l.rejectAdjacentSuffix(ptr, "invalid literal"); err != nil {
+		return token{}, err
+	}
 	return token{kind: kind, span: l.spanFrom(start), raw: lit}, nil
+}
+
+// rejectAdjacentSuffix fails when the byte right after a number or literal
+// could only continue a malformed value, as in 0x1F, 1true, 1.5.5 or truex.
+// Reporting it here, at the value's pointer, is what lets {"v": 0x1F} name /v
+// rather than the containing object. The span starts at the offending byte.
+// A value followed by whitespace and then garbage is a missing separator,
+// which the parser reports at the container.
+func (l *lexer) rejectAdjacentSuffix(ptr ashlar.Pointer, msg string) error {
+	if l.offset >= len(l.src) || !isValueContinuation(l.src[l.offset]) {
+		return nil
+	}
+	at := l.pos()
+	l.advanceByte()
+	return l.syntaxError(l.spanFrom(at), ptr, msg)
+}
+
+// isValueContinuation reports whether b, directly after a number or literal,
+// can only be part of a malformed value: a letter, digit, '.', '+', '-' or '_'.
+func isValueContinuation(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', isDigit(b):
+		return true
+	}
+	return b == '.' || b == '+' || b == '-' || b == '_'
 }
 
 func (l *lexer) scanString(start ashlar.SourcePos, ptr ashlar.Pointer) (token, error) {
@@ -238,6 +266,9 @@ func (l *lexer) scanNumber(start ashlar.SourcePos, ptr ashlar.Pointer) (token, e
 		}
 	}
 	if err := l.scanFractionAndExponent(start, ptr); err != nil {
+		return token{}, err
+	}
+	if err := l.rejectAdjacentSuffix(ptr, "invalid number"); err != nil {
 		return token{}, err
 	}
 	raw := string(l.src[start.Offset:l.offset])

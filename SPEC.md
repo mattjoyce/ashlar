@@ -228,7 +228,11 @@ type Document struct {
 
 // Read parses raw bytes as a single strict JSON document.
 // It fails with ErrDuplicateKey on duplicate object keys at any depth, and ErrTrailingContent
-// on any token following the top-level JSON value. Original bytes and number lexemes are preserved.
+// on any token following the top-level JSON value after whitespace. A number or literal
+// immediately followed by a letter, digit, '.', '+', '-' or '_' (0x1F, 1.5.5, truex) is a
+// malformed value: ErrSyntax "invalid number" or "invalid literal" at that value's pointer,
+// located at the offending byte. A missing separator is reported at the container's pointer.
+// Original bytes and number lexemes are preserved.
 func Read(source string, raw []byte) (Document, error)
 
 // ReadFS reads and parses a single strict JSON document from fsys at path.
