@@ -361,6 +361,21 @@ func (r Resolved) Root() ashlar.Value
 func (r Resolved) Files() []string
 func (r Resolved) SourceHash() (string, error)
 // DecodeStrict and DecodeValueStrict decode into dst under these rules:
+//   - Struct tags. The `yaml` tag is read first, with `json` as the fallback, and `-`
+//     excludes a field. A name given alongside `inline` is ignored. An embedded struct,
+//     or a struct field tagged `,inline`, promotes its fields into the parent's key set.
+//     A struct rejects any key it does not name with ErrUnknownField.
+//   - Inline map catch-all. An exported map field tagged `,inline` receives every key
+//     no named or promoted field claims, so only that struct opens to extra keys;
+//     structs inside its entries and sibling structs stay closed. Each entry decodes at
+//     its flat pointer (`/timeouts/cpu`), so errors, redaction and provenance work as
+//     for any value. With no extra keys the field is left as it was; otherwise it is
+//     replaced by a fresh map, as a named map field is. Each time a mapping is decoded
+//     into the struct, these shapes fail with ErrValidation at the mapping's pointer:
+//     two inline maps, a key kind that is not string, an inline pointer to a map, and
+//     an inline map inside an embedded or inline struct (declare it on the decoded
+//     struct itself). A null or omitted struct decodes no mapping and is not checked.
+//     An unexported inline map is ignored and the struct stays closed.
 //   - Unknown keys anywhere in the value are rejected before dst is written, using the
 //     same field index as decoding. Other failures can leave dst partly written.
 //   - Custom unmarshalers. null zeroes the target. A number goes to json.Unmarshaler
@@ -380,6 +395,10 @@ func (r Resolved) Explain(ptr ashlar.Pointer) string
 func (r Resolved) ExplainAll() []ashlar.FieldProvenance
 func (r Resolved) FormatProvenanceReport() string
 func (r Resolved) Sanitize(useFingerprint bool) ashlar.Value
+
+// DecodeValueStrict decodes any ashlar.Value, resolved or not, under the same rules.
+// It redacts by frozen provenance and DefaultRedactor.
+func DecodeValueStrict(val ashlar.Value, dst any) error
 ```
 
 ---

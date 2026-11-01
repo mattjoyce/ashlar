@@ -41,7 +41,8 @@ func (r Resolved) SourceHash() string {
 // DecodeStrict decodes r.Root() into dst, rejecting unknown struct fields with
 // source-located ashlar.ErrUnknownField diagnostics. Decode errors redact
 // values using only the sensitivity frozen at resolution time, so they follow
-// the same CompositionPolicy.Redactor as every other Resolved report.
+// the same CompositionPolicy.Redactor as every other Resolved report. Struct
+// tags and inline map catch-alls follow DecodeValueStrict.
 //
 // Unknown keys are rejected before dst is written, so that failure leaves dst
 // untouched. Any other failure, such as a value of the wrong type or a custom
