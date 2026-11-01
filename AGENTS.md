@@ -20,7 +20,7 @@ This file governs how work is done: coding standards, testing, quality gates, an
 ### Dependencies
 - **Standard library first:** `testing`, `errors`, `fmt.Errorf(... %w ...)`, `io/fs`, `path/filepath`, `context`.
 - **Minimal external footprint:** Ashlar is a foundational library imported by applications with strict dependency budgets. Every direct dependency added to `go.mod` requires explicit human approval, a statement of what the standard library lacks, and an accounting of its transitive cost.
-- **No application coupling:** Ashlar must never import consumer application packages, database drivers, or specific vault/encryption backends. Secret decryption and file-integrity checks enter through narrow caller-supplied hooks.
+- **No application coupling:** Ashlar must never import consumer application packages, database drivers, or specific vault/encryption backends. Secret decryption and file-integrity checks enter through the caller-supplied hooks in `SPEC.md`.
 
 ### Package & Code Structure
 - Group packages by concern, not by layer. Keep non-public implementation details in `internal/` where appropriate.
@@ -33,7 +33,7 @@ This file governs how work is done: coding standards, testing, quality gates, an
 ### Error Handling & Safety
 - Wrap propagated errors with useful context (`fmt.Errorf("...: %w", err)`).
 - Use `errors.Is` and `errors.As` with exported sentinel or structured error types; never inspect errors by string matching.
-  One narrow exception: a third-party error that exposes no structured position may have its text read to extract a position for display (yaml.v3's "line N:"). The text must never drive classification or control flow, and a failed match must fall back to a coarser location, never a guess.
+  One narrow exception: a third-party error that exposes no structured position may have its text read to extract a position for display (yaml.v3's "line N:"). The text must never drive classification or control flow, and a failed match must fall back to a coarser location, as `SPEC.md` §1 invariant 5 requires.
 - Separate document/syntax errors, structural/schema errors, composition errors, and application validation errors clearly.
 - Never `panic` in library code. Never log directly from library code or log-and-return the same error; return structured, redactable errors to the caller.
 - Handle every error or explicitly comment why it is safe to ignore.
