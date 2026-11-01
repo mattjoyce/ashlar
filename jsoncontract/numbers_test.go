@@ -367,3 +367,52 @@ func TestDecodeStrictNumberMismatchMessages(t *testing.T) {
 		})
 	}
 }
+
+// TestReadMalformedValueSuffixPointer checks that a number or literal
+// immediately followed by a byte that can only continue a malformed value is
+// reported at that value's pointer, located at the offending byte, without
+// quoting it. Whitespace-separated garbage stays a separator error at the
+// container, and at the root it stays trailing content.
+func TestReadMalformedValueSuffixPointer(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		doc  string
+		kind error
+		ptr  ashlar.Pointer
+		loc  string
+		msg  string
+	}{
+		{"hex_member", `{"v": 0x1F}`, ashlar.ErrSyntax, "/v", "c.json:1:8", "invalid number"},
+		{"octal_member", `{"v": 0o17}`, ashlar.ErrSyntax, "/v", "c.json:1:8", "invalid number"},
+		{"number_then_literal", `{"v": 1true}`, ashlar.ErrSyntax, "/v", "c.json:1:8", "invalid number"},
+		{"double_fraction", `{"v": 1.5.5}`, ashlar.ErrSyntax, "/v", "c.json:1:10", "invalid number"},
+		{"literal_suffix", `{"v": truex}`, ashlar.ErrSyntax, "/v", "c.json:1:11", "invalid literal"},
+		{"null_suffix", `{"v": nullx}`, ashlar.ErrSyntax, "/v", "c.json:1:11", "invalid literal"},
+		{"nested", `{"a": {"v": 0x1F}}`, ashlar.ErrSyntax, "/a/v", "c.json:1:14", "invalid number"},
+		{"array_first", `{"a": [0x1F]}`, ashlar.ErrSyntax, "/a/0", "c.json:1:9", "invalid number"},
+		{"array_later", `{"a": [1, 2, 0x1F]}`, ashlar.ErrSyntax, "/a/2", "c.json:1:15", "invalid number"},
+		{"root", `0x1F`, ashlar.ErrSyntax, "", "c.json:1:2", "invalid number"},
+		{"missing_comma_object", `{"v": 1 2}`, ashlar.ErrSyntax, "", "c.json:1:9", "expected ',' or '}' after object member"},
+		{"string_after_number", `{"v": 1"a"}`, ashlar.ErrSyntax, "", "c.json:1:8", "expected ',' or '}' after object member"},
+		{"missing_comma_array", `[1 2]`, ashlar.ErrSyntax, "", "c.json:1:4", "expected ',' or ']' after array element"},
+		{"root_trailing", `1 2`, ashlar.ErrTrailingContent, "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := jsoncontract.Read("c.json", []byte(tc.doc))
+			if !errors.Is(err, tc.kind) {
+				t.Fatalf("error = %v, want %v", err, tc.kind)
+			}
+			if tc.msg == "" {
+				return
+			}
+			requireJSONLocatedError(t, err, tc.kind, tc.ptr, tc.loc)
+			var ae *ashlar.Error
+			if errors.As(err, &ae) && ae.Message != tc.msg {
+				t.Errorf("Message = %q, want %q", ae.Message, tc.msg)
+			}
+		})
+	}
+}

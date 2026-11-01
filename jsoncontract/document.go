@@ -240,7 +240,9 @@ func (p *parser) parseObjectMemberValue(memberPtr ashlar.Pointer, depth int) (as
 }
 
 func (p *parser) parseArray(start ashlar.SourcePos, ptr ashlar.Pointer, depth int) (ashlar.Value, error) {
-	tok, err := p.lex.next(ptr)
+	// Value tokens are read with the element's pointer, so a malformed
+	// element is reported at that element. Separators use the array's.
+	tok, err := p.lex.next(ptr.Index(0))
 	if err != nil {
 		return ashlar.Value{}, err
 	}
@@ -269,7 +271,7 @@ func (p *parser) parseArray(start ashlar.SourcePos, ptr ashlar.Pointer, depth in
 		if sep.kind != tokComma {
 			return ashlar.Value{}, p.lex.syntaxError(sep.span, ptr, "expected ',' or ']' after array element")
 		}
-		tok, err = p.lex.next(ptr)
+		tok, err = p.lex.next(ptr.Index(idx + 1))
 		if err != nil {
 			return ashlar.Value{}, err
 		}
