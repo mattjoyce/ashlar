@@ -33,5 +33,20 @@ a regression.
 - **`*big.Int` targets.** `big.Int` is a `TextUnmarshaler`, so a numeric
   scalar decoded into it fails with "expected string for big.Int".
 
+- **Decode-time messages for values that aren't classified as sensitive.**
+  `v: sekrit123` decoded into a `time.Duration` reports
+  `invalid duration "sekrit123"`. The same goes for a custom
+  `TextUnmarshaler` that echoes its input. This follows the current policy,
+  which redacts sensitive nodes only. Load-time errors now withhold all
+  content. Should decode-time errors do the same, at the cost of less helpful
+  messages?
+- **Include paths in diagnostics.** A GPT review asked to hide include target
+  paths in cycle and verifier messages. I declined for PR #1. An included
+  file's path is its provenance and appears in the `file:line:col` origin of
+  every value read from it, and AGENTS.md promises that. Hiding it in a few
+  messages would protect nothing. Escaping and missing targets, which never
+  become origins, are already withheld. Revisit only if include paths are
+  ever treated as secret material.
+
 ## Narrative
 - 2026-11-01: Collected from the four card 3 test agents' reports. (by @claude)

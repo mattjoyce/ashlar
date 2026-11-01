@@ -220,7 +220,9 @@ func convertMappingNode(
 				ashlar.ErrSyntax,
 				ptr,
 				kOrig,
-				fmt.Sprintf("YAML mapping key %q must be a string scalar (got %s)", kNode.Value, kNode.ShortTag()),
+				// Neither the rejected key nor its tag is quoted: both are
+				// document content that never became an accepted key.
+				"YAML mapping key must be a string scalar",
 				nil,
 			)
 		}
