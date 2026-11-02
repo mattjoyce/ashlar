@@ -17,10 +17,11 @@ that collects every unknown field with its location".
 
 ## Why this fits Ashlar
 
-SPEC §1 invariant 6: whether an unknown key is fatal is a choice an
-application can reasonably make differently, for example while migrating
-operators' files. Ashlar keeps the strict default and supplies the mechanism;
-the caller supplies the policy.
+The decoders keep failing on unknown keys (SPEC §1 invariant 5); that has no
+lenient mode. What to do with a diagnostic is the caller's policy (invariant
+6). A full report gives the caller enough to decide, for example to warn on
+every key while migrating operators' files before switching to strict
+decoding.
 
 ## Shape (to decide)
 
@@ -43,10 +44,11 @@ the caller supplies the policy.
   `ErrValidation` for an unsupported catch-all) or stop there.
 - How a caller decodes after warning. Options: a value-level helper that drops
   reported keys, or leave it to the caller.
-- SPEC §1 invariant 5 says unknown fields fail. Amend it to say the strict
-  decoders fail and the report exists for callers whose policy differs.
 
 ## Narrative
 - 2026-11-02: Created from the Ductile consumer check on PR #3. Reshaped from
   a lenient decode mode to a report, so strict decoding stays the default and
   the warn-or-fail choice stays with the caller. (by @claude)
+- 2026-11-02: Invariant 6 now says invariant 5's failures have no lenient
+  mode, so this card needs no amendment to invariant 5. The report is a
+  diagnostic, and the decoders stay strict. (by @claude)
